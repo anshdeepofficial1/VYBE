@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -116,7 +116,7 @@ jobs:
           done
 
       - name: Upload Android release artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: vybe-android-${{ steps.version.outputs.value }}
           path: release/android/*.apk
@@ -135,7 +135,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Check Apple signing credentials
         id: check_signing
@@ -248,7 +248,7 @@ jobs:
           fi
 
       - name: Upload iPhone release artifact
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: vybe-ios-${{ steps.version.outputs.value }}
           path: release/ios/*.ipa
@@ -265,7 +265,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download all mobile artifacts
         uses: actions/download-artifact@v8
