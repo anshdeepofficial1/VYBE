@@ -1,3 +1,19 @@
+## [0.14.0] - 2026-10-18
+### Added
+- Full App artwork: one app-wide blurred cover layer behind every screen, bar and sheet, with a toggle in Settings.
+- Region-aware Home storefront derived from the connection when no explicit country is chosen.
+
+### Changed
+- Stream resolution now races the preferred resolver against fallbacks concurrently, with a shared single-flight cache, so a tap starts audio in about one second even on a cold start.
+- The stream liveness probe mirrors Media3's real request (no Range header, YouTube Music Origin/Referer, Chrome user agent) so dead mirrors lose the race instead of winning and then failing.
+- Provider ordering is authoritative; search results are no longer re-ranked by title text, which removes unrelated same-name tracks from Punjabi and other searches.
+- Release builds are signed, R8-minified and resource-shrunk.
+
+### Fixed
+- Fixed repeated HTTP 403 recoveries that stalled playback after the first buffering pass.
+- Fixed wrong-song playback and wrong-language recommendations caused by local title-based re-ranking.
+- Removed the per-screen artwork wash that conflicted with the app-wide immersive layer.
+
 ## [0.13.0] - 2026-09-08
 ### Fixed
 - Prevented valid first-page YouTube Music Home and Quick Picks data from being discarded when continuation requests exceeded the cold-start timeout.

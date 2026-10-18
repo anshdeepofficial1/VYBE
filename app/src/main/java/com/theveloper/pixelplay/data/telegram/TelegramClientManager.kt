@@ -22,11 +22,17 @@ class TelegramClientManager @Inject constructor(
 ) {
 
     companion object {
-        init {
+        @Volatile private var nativeLibraryLoaded = false
+
+        @Synchronized
+        private fun ensureNativeLibraryLoaded() {
+            if (nativeLibraryLoaded) return
             try {
                 System.loadLibrary("tdjni")
+                nativeLibraryLoaded = true
             } catch (e: UnsatisfiedLinkError) {
                 Timber.e(e, "Failed to load TDLib native library")
+                throw e
             }
         }
     }
@@ -65,13 +71,10 @@ class TelegramClientManager @Inject constructor(
         }
     }
 
-    init {
-        initializeClient()
-    }
-
     @Synchronized
-    private fun initializeClient() {
+    fun initializeClient() {
         if (client != null) return
+        ensureNativeLibraryLoaded()
         // Set log verbosity to 1 (Errors only) to prevent heavy logging
         try {
             Client.execute(TdApi.SetLogVerbosityLevel(1))
@@ -145,15 +148,18 @@ class TelegramClientManager @Inject constructor(
     }
 
     fun sendPhoneNumber(phoneNumber: String) {
+        initializeClient()
         val settings = TdApi.PhoneNumberAuthenticationSettings()
         client?.send(TdApi.SetAuthenticationPhoneNumber(phoneNumber, settings), defaultHandler)
     }
 
     fun checkAuthenticationCode(code: String) {
+        initializeClient()
         client?.send(TdApi.CheckAuthenticationCode(code), defaultHandler)
     }
     
     fun checkAuthenticationPassword(password: String) {
+        initializeClient()
         client?.send(TdApi.CheckAuthenticationPassword(password), defaultHandler)
     }
 
@@ -171,6 +177,7 @@ class TelegramClientManager @Inject constructor(
      * General purpose suspend function to send requests to TDLib
      */
     suspend fun <T : TdApi.Object> sendRequest(function: TdApi.Function<*>): T = kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        initializeClient()
         val localClient = client
         if (localClient != null) {
             localClient.send(function) { result ->

@@ -15,11 +15,13 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -33,10 +35,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import coil.compose.AsyncImage
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
@@ -56,12 +61,15 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -177,7 +185,32 @@ fun HomeScreen(
     val youtubeHomeShelves by playerViewModel.youtubeHomeShelves.collectAsStateWithLifecycle()
     val homeMixPreviewSongs by playerViewModel.homeMixPreviewSongs.collectAsStateWithLifecycle()
     val playbackHistory by playerViewModel.playbackHistory.collectAsStateWithLifecycle()
+    val isDataSaverEnabled by playerViewModel.dataSaverEnabled.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
+    var activeMoodFeed by remember { mutableStateOf<Pair<String, List<Song>>?>(null) }
+    val selectedHomeMood = activeMoodFeed?.first
+    val selectedMoodSongs = activeMoodFeed?.second.orEmpty()
+    val homeMoodLabels = remember { listOf("Workout", "Feel good", "Energize", "Relax", "Romance") }
+    val moodFeedCache = remember {
+        mutableStateMapOf<String, List<Song>>().apply {
+            homeMoodLabels.forEach { mood ->
+                playerViewModel.cachedMoodMix(mood).takeIf(List<Song>::isNotEmpty)?.let { put(mood, it) }
+            }
+        }
+    }
+
+    // Warm mood feeds without blocking or replacing the provider Home page. Once a feed is
+    // available, selecting its chip is an immediate in-memory swap (the same interaction model
+    // as YouTube Music) instead of a full-page spinner.
+    LaunchedEffect(isYouTubeLoggedIn, youtubeHomeShelves, isDataSaverEnabled) {
+        if (isDataSaverEnabled) return@LaunchedEffect
+        homeMoodLabels.forEach { mood ->
+            if (moodFeedCache[mood].isNullOrEmpty()) {
+                val songs = playerViewModel.loadMoodMix(mood)
+                if (songs.isNotEmpty()) moodFeedCache[mood] = songs.distinctBy(::recommendationIdentity)
+            }
+        }
+    }
 
     if (showFirstYouTubeMusicPrompt) {
         AlertDialog(
@@ -245,22 +278,18 @@ fun HomeScreen(
         )
     }
 
-    val playbackHistoryMixSongs = remember(playbackHistory) {
-        playbackHistory.mapNotNull { entry -> entry.track?.toSong(entry.songId) }
-            .distinctBy { it.id }
-            .take(24)
-    }
     val yourMixSongs = remember(
         curatedYourMixSongs,
         dailyMixSongs,
+        discoverySongs,
         homeMixPreviewSongs,
-        playbackHistoryMixSongs,
     ) {
         when {
             curatedYourMixSongs.isNotEmpty() -> curatedYourMixSongs
             dailyMixSongs.isNotEmpty() -> dailyMixSongs
+            discoverySongs.isNotEmpty() -> discoverySongs
             homeMixPreviewSongs.isNotEmpty() -> homeMixPreviewSongs
-            else -> playbackHistoryMixSongs
+            else -> emptyList()
         }.toImmutableList()
     }
     var homePlaceholderRefreshGeneration by rememberSaveable { mutableIntStateOf(0) }
@@ -326,14 +355,64 @@ fun HomeScreen(
     val recentlyPlayedQueue = remember(recentlyPlayedSongs) {
         recentlyPlayedSongs.map { it.song }.toImmutableList()
     }
+    val providerListenAgain = remember(youtubeHomeShelves) {
+        youtubeHomeShelves.firstOrNull { it.title.contains("listen again", ignoreCase = true) }
+            ?.songs.orEmpty()
+    }
+    val listenAgainSongs = remember(providerListenAgain, recentlyPlayedQueue, isYouTubeLoggedIn) {
+        val source = if (isYouTubeLoggedIn) providerListenAgain else providerListenAgain + recentlyPlayedQueue
+        source.distinctBy(::recommendationIdentity).take(10)
+    }
     // A fresh session ordering prevents Home from presenting the exact same first cards
     // on every launch while keeping the underlying personalised recommendation pool intact.
-    val sessionQuickPicks = remember(quickPickSongs, youtubeHomeShelves, trendingSongs, latestReleaseSongs) {
-        val providerFallback = youtubeHomeShelves.flatMap { it.songs }
-        (quickPickSongs + providerFallback + trendingSongs + latestReleaseSongs)
-            .distinctBy(Song::id)
-            .shuffled()
+    val sessionQuickPicks = remember(
+        quickPickSongs, youtubeHomeShelves, trendingSongs, latestReleaseSongs, listenAgainSongs,
+        isYouTubeLoggedIn,
+    ) {
+        val listenAgainKeys = listenAgainSongs.mapTo(hashSetOf(), ::recommendationIdentity)
+        val nonHistoryShelves = youtubeHomeShelves
+            .filterNot { it.title.contains("listen again", ignoreCase = true) }
+            .flatMap { it.songs }
+        (quickPickSongs + nonHistoryShelves + discoverySongs + latestReleaseSongs + trendingSongs)
+            .distinctBy(::recommendationIdentity)
+            .filterNot { recommendationIdentity(it) in listenAgainKeys }
             .take(10)
+    }
+    val speedDialSongs = remember(
+        sessionQuickPicks,
+        listenAgainSongs,
+        providerListenAgain,
+        recentlyPlayedQueue,
+        youtubeHomeShelves,
+        trendingSongs,
+        latestReleaseSongs,
+        discoverySongs,
+        isYouTubeLoggedIn,
+    ) {
+        val reservedIds = sessionQuickPicks.mapTo(hashSetOf(), Song::id)
+        val reservedIdentities = sessionQuickPicks.mapTo(hashSetOf(), ::recommendationIdentity)
+        val candidates = if (isYouTubeLoggedIn) {
+            // Speed Dial represents frequently/recently played account music. Never fill
+            // it from arbitrary discovery/chart shelves just to reach eight cards.
+            providerListenAgain + recentlyPlayedQueue
+        } else {
+            recentlyPlayedQueue + providerListenAgain
+        }
+        candidates
+            .distinctBy(::recommendationIdentity)
+            .filterNot {
+                it.id in reservedIds || recommendationIdentity(it) in reservedIdentities
+            }
+            .take(8)
+    }
+    val speedDialRandomPool = remember(
+        recentlyPlayedQueue,
+        providerListenAgain,
+        speedDialSongs,
+    ) {
+        (recentlyPlayedQueue + providerListenAgain + speedDialSongs)
+            .distinctBy(::recommendationIdentity)
+            .toImmutableList()
     }
     val historySeed = recentlyPlayedQueue.firstOrNull()
     val relatedSongs = remember(historySeed, quickPickSongs, dailyMixSongs) {
@@ -458,21 +537,44 @@ fun HomeScreen(
             ) {
                 val enabledHomeSections = settingsUiState.homeSectionOrder
                     .filterNot { it in settingsUiState.hiddenHomeSections }
-                enabledHomeSections.forEach { homeSection -> when (homeSection) {
+                    .let { configured ->
+                        if (isYouTubeLoggedIn) configured.filter {
+                            it == HomeSectionPreference.MOODS ||
+                                it == HomeSectionPreference.QUICK_PICKS ||
+                                it == HomeSectionPreference.SPEED_DIAL ||
+                                it == HomeSectionPreference.LISTEN_AGAIN ||
+                                it == HomeSectionPreference.YOUTUBE_SHELVES
+                        } else configured
+                    }
+                enabledHomeSections.forEach { homeSection -> if (selectedHomeMood == null || homeSection == HomeSectionPreference.MOODS) when (homeSection) {
                 HomeSectionPreference.MOODS -> item(key = "home_mood_shortcuts", contentType = "mood_shortcuts") {
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
-                        items(listOf("Workout", "Feel good", "Energise", "Relax", "Romantic")) { mood ->
+                        items(homeMoodLabels) { mood ->
                             Surface(
                                 onClick = {
-                                    navController.navigateSafely(
-                                        Screen.GenreDetail.createRoute(java.net.URLEncoder.encode(mood, "UTF-8"))
-                                    )
+                                    if (selectedHomeMood == mood) {
+                                        activeMoodFeed = null
+                                    } else {
+                                        val cachedFeed = moodFeedCache[mood].orEmpty()
+                                        if (cachedFeed.isNotEmpty()) {
+                                            activeMoodFeed = mood to cachedFeed
+                                        }
+                                        scope.launch {
+                                            val refreshed = playerViewModel.loadMoodMix(mood)
+                                                .distinctBy(::recommendationIdentity)
+                                            if (refreshed.isNotEmpty()) {
+                                                moodFeedCache[mood] = refreshed
+                                                activeMoodFeed = mood to refreshed
+                                            }
+                                        }
+                                    }
                                 },
                                 shape = RoundedCornerShape(18.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                color = if (selectedHomeMood == mood) MaterialTheme.colorScheme.primaryContainer
+                                    else MaterialTheme.colorScheme.surfaceContainerHighest,
                             ) {
                                 Text(
                                     mood,
@@ -480,6 +582,21 @@ fun HomeScreen(
                                     style = MaterialTheme.typography.labelLarge,
                                 )
                             }
+                        }
+                    }
+                    selectedHomeMood?.let { activeMood ->
+                        Spacer(Modifier.height(16.dp))
+                        Column(Modifier.padding(horizontal = 16.dp)) {
+                            Text(
+                                text = "$activeMood for you",
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = "A complete $activeMood feed from YouTube Music, tuned to your listening.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
@@ -494,11 +611,12 @@ fun HomeScreen(
                             songs = discoverySongs.take(10),
                             queueName = "New Finds",
                             playerViewModel = playerViewModel,
+                            onOpenSection = { openShelfDetail(navController, "New Finds", discoverySongs) },
                         )
                     }
                 }
 
-                HomeSectionPreference.QUICK_PICKS -> item(
+                HomeSectionPreference.QUICK_PICKS -> if (sessionQuickPicks.isNotEmpty()) item(
                     key = "quick_picks_section",
                     contentType = "youtube_music_row"
                 ) {
@@ -507,27 +625,29 @@ fun HomeScreen(
                         songs = sessionQuickPicks,
                         queueName = "Quick Picks",
                         playerViewModel = playerViewModel,
+                            compactListStyle = true,
+                            onOpenSection = { openShelfDetail(navController, "Quick Picks", sessionQuickPicks) },
                     )
                 }
 
-                HomeSectionPreference.SPEED_DIAL -> if (sessionQuickPicks.isNotEmpty()) {
+                HomeSectionPreference.SPEED_DIAL -> if (speedDialSongs.isNotEmpty()) {
                     item(key = "speed_dial_section", contentType = "youtube_music_row") {
-                        YouTubeMusicHomeRow(
-                            title = "Speed dial",
-                            songs = sessionQuickPicks.take(10),
-                            queueName = "Speed dial",
+                        SpeedDialGrid(
+                            songs = speedDialSongs,
+                            randomPool = speedDialRandomPool,
                             playerViewModel = playerViewModel,
                         )
                     }
                 }
 
-                HomeSectionPreference.LISTEN_AGAIN -> if (recentlyPlayedQueue.isNotEmpty()) {
+                HomeSectionPreference.LISTEN_AGAIN -> if (listenAgainSongs.isNotEmpty()) {
                     item(key = "listen_again_section", contentType = "youtube_music_row") {
                         YouTubeMusicHomeRow(
                             title = "Listen Again",
-                            songs = recentlyPlayedQueue.take(10),
+                            songs = listenAgainSongs,
                             queueName = "Listen Again",
                             playerViewModel = playerViewModel,
+                            onOpenSection = { openShelfDetail(navController, "Listen Again", listenAgainSongs) },
                         )
                     }
                 }
@@ -552,6 +672,7 @@ fun HomeScreen(
                                     songs = shelf.songs,
                                     queueName = shelf.title,
                                     playerViewModel = playerViewModel,
+                                    onOpenSection = { openShelfDetail(navController, shelf.title, shelf.songs) },
                                 )
                             } else {
                                 YouTubeMusicCollectionRow(
@@ -622,19 +743,22 @@ fun HomeScreen(
                         it.title.contains("new release", true) || it.title.contains("release radar", true)
                     }) {
                     item(key = "release_radar", contentType = "youtube_music_row") {
-                        YouTubeMusicHomeRow("New Releases & Release Radar", latestReleaseSongs.take(10), "Release Radar", playerViewModel)
+                        YouTubeMusicHomeRow("New Releases & Release Radar", latestReleaseSongs.take(10), "Release Radar", playerViewModel,
+                            onOpenSection = { openShelfDetail(navController, "New Releases & Release Radar", latestReleaseSongs) })
                     }
                 }
                 HomeSectionPreference.CHARTS -> if (trendingSongs.isNotEmpty() && youtubeHomeShelves.none {
                         it.title.contains("chart", true) || it.title.contains("trending", true)
                     }) {
                     item(key = "top_charts", contentType = "youtube_music_row") {
-                        YouTubeMusicHomeRow("Top Charts & Trending", trendingSongs.take(10), "Top Charts", playerViewModel)
+                        YouTubeMusicHomeRow("Top Charts & Trending", trendingSongs.take(10), "Top Charts", playerViewModel,
+                            onOpenSection = { openShelfDetail(navController, "Top Charts & Trending", trendingSongs) })
                     }
                 }
                 HomeSectionPreference.BECAUSE_YOU_LISTENED -> if (historySeed != null && relatedSongs.isNotEmpty()) {
                     item(key = "because_you_listened", contentType = "youtube_music_row") {
-                        YouTubeMusicHomeRow("Because You Listened to ${historySeed.artist}", relatedSongs, "Because You Listened", playerViewModel)
+                        YouTubeMusicHomeRow("Because You Listened to ${historySeed.artist}", relatedSongs, "Because You Listened", playerViewModel,
+                            onOpenSection = { openShelfDetail(navController, "Because You Listened to ${historySeed.artist}", relatedSongs) })
                     }
                 }
                 // Daily Mix
@@ -697,6 +821,35 @@ fun HomeScreen(
                 }
                 else -> Unit
                 } }
+                // Never replace Home with a blocking loading page. A first uncached request keeps
+                // the current provider shelves visible; the mood feed swaps in only when ready.
+                if (selectedHomeMood != null && selectedMoodSongs.isNotEmpty()) {
+                    item(key = "mood_quick_picks") {
+                        YouTubeMusicHomeRow(
+                            title = "${selectedHomeMood} Quick Picks",
+                            songs = selectedMoodSongs.take(12),
+                            queueName = "${selectedHomeMood} Quick Picks",
+                            playerViewModel = playerViewModel,
+                            compactListStyle = true,
+                            onOpenSection = { openShelfDetail(navController, "${selectedHomeMood} Quick Picks", selectedMoodSongs) },
+                        )
+                    }
+                    // Only show a second row when the provider actually returned more than the
+                    // first twelve songs. The previous fallback repeated a shuffled copy of the
+                    // same twelve, which read as unrelated filler.
+                    val moreMoodSongs = selectedMoodSongs.drop(12).take(12)
+                    if (moreMoodSongs.isNotEmpty()) {
+                        item(key = "mood_more_for_you") {
+                            YouTubeMusicHomeRow(
+                                title = "More ${selectedHomeMood} music",
+                                songs = moreMoodSongs,
+                                queueName = "More ${selectedHomeMood} music",
+                                playerViewModel = playerViewModel,
+                                onOpenSection = { openShelfDetail(navController, "More ${selectedHomeMood} music", selectedMoodSongs) },
+                            )
+                        }
+                    }
+                }
             }
         }
         Box(
@@ -1047,6 +1200,12 @@ private fun rememberYourMixTitleStyle(): TextStyle {
     }
 }
 
+private fun recommendationIdentity(song: Song): String = buildString {
+    append(song.title.trim().lowercase().replace(Regex("\\s+"), " "))
+    append('|')
+    append(song.artist.trim().lowercase().replace(Regex("\\s+"), " "))
+}
+
 /**
  * Shows YouTube Music trending tracks on the Home screen as a horizontal card row.
  * Always renders even when no local library exists, giving the user something to listen to.
@@ -1058,6 +1217,8 @@ private fun YouTubeMusicHomeRow(
     songs: List<Song>,
     queueName: String,
     playerViewModel: PlayerViewModel,
+    compactListStyle: Boolean = false,
+    onOpenSection: (() -> Unit)? = null,
 ) {
     // Context menu
     val contextMenuSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1078,6 +1239,15 @@ private fun YouTubeMusicHomeRow(
             if (songs.isNotEmpty()) {
                 TextButton(onClick = { playerViewModel.playSongs(songs, songs.first(), queueName) }) {
                     Text("Play all")
+                }
+                onOpenSection?.let { open ->
+                    Surface(onClick = open, shape = RoundedCornerShape(50)) {
+                        Icon(
+                            Icons.Rounded.ChevronRight,
+                            contentDescription = "Open all $title",
+                            modifier = Modifier.padding(8.dp).size(20.dp),
+                        )
+                    }
                 }
             }
         }
@@ -1100,14 +1270,25 @@ private fun YouTubeMusicHomeRow(
             return@Column
         }
 
+        val visibleSongs = songs.take(10)
         LazyRow(
             contentPadding = PaddingValues(horizontal = 16.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(songs.take(10), key = { it.id }) { song ->
+            val rowGroups = if (compactListStyle) visibleSongs.chunked(4) else visibleSongs.map(::listOf)
+            items(rowGroups, key = { group -> group.joinToString("|") { it.id } }) { group ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                group.forEach { song ->
                 Card(
                     modifier = Modifier
-                        .width(164.dp)
+                        .animateItem(
+                            fadeInSpec = androidx.compose.animation.core.tween(260),
+                            fadeOutSpec = androidx.compose.animation.core.tween(180),
+                            placementSpec = androidx.compose.animation.core.spring(
+                                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
+                            ),
+                        )
+                        .width(if (compactListStyle) 330.dp else 164.dp)
                         .clip(RoundedCornerShape(16.dp))
                         .combinedClickable(
                             onClick = {
@@ -1125,7 +1306,25 @@ private fun YouTubeMusicHomeRow(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
                     )
                 ) {
-                    Column {
+                    if (compactListStyle) Row(
+                        modifier = Modifier.height(72.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AsyncImage(
+                            model = song.albumArtUriString,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxHeight().aspectRatio(1f)
+                                .clip(RoundedCornerShape(14.dp)),
+                        )
+                        Column(modifier = Modifier.padding(horizontal = 12.dp)) {
+                            Text(song.title, maxLines = 1, style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold, overflow = TextOverflow.Ellipsis)
+                            Text(song.displayArtist, maxLines = 1, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                overflow = TextOverflow.Ellipsis)
+                        }
+                    } else Column {
                         AsyncImage(
                             model = song.albumArtUriString,
                             contentDescription = null,
@@ -1166,7 +1365,9 @@ private fun YouTubeMusicHomeRow(
                         }
                     }
                 }
+                }
             }
+        }
         }
     }
 
@@ -1236,7 +1437,15 @@ private fun YouTubeMusicCollectionRow(
         ) {
                             items(collections.take(20), key = { it.browseId }) { collection ->
                 Card(
-                    modifier = Modifier.width(164.dp).clickable {
+                    modifier = Modifier
+                        .animateItem(
+                            fadeInSpec = androidx.compose.animation.core.tween(260),
+                            fadeOutSpec = androidx.compose.animation.core.tween(180),
+                            placementSpec = androidx.compose.animation.core.spring(
+                                stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
+                            ),
+                        )
+                        .width(164.dp).clickable {
                         val route = if (collection.pageType == "MUSIC_PAGE_TYPE_ARTIST") {
                             Screen.ArtistDetail.createRoute(collection.browseId)
                         } else {
@@ -1274,8 +1483,182 @@ private fun YouTubeMusicCollectionRow(
                         }
                     }
                 }
+                }
             }
         }
+    }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SpeedDialGrid(
+    songs: List<Song>,
+    randomPool: List<Song>,
+    playerViewModel: PlayerViewModel,
+) {
+    val visibleSongs = songs.take(8)
+    if (visibleSongs.isEmpty()) return
+    val context = LocalContext.current
+    val contextMenuSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var contextMenuSong by remember { mutableStateOf<Song?>(null) }
+    var speedDialSongForPlaylist by remember { mutableStateOf<Song?>(null) }
+    var randomDialTurns by remember { mutableIntStateOf(0) }
+    val randomDialRotation by animateFloatAsState(
+        targetValue = randomDialTurns * 720f,
+        animationSpec = tween(durationMillis = 720),
+        label = "speedDialRandomSpin",
+    )
+
+    Column(modifier = Modifier.padding(bottom = 8.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Speed dial", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f).padding(vertical = 4.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            val gap = 8.dp
+            val tileSize = (maxWidth - gap * 2) / 3
+            Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+                (0 until 3).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+                        (0 until 3).forEach { column ->
+                            val index = row * 3 + column
+                            if (index < visibleSongs.size) {
+                                val song = visibleSongs[index]
+                                Box(
+                                    modifier = Modifier
+                                        .size(tileSize)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .combinedClickable(
+                                            onClick = { playerViewModel.playSongs(visibleSongs, song, "Speed dial") },
+                                            onDoubleClick = { playerViewModel.toggleFavoriteSpecificSong(song) },
+                                            onLongClick = { contextMenuSong = song },
+                                        ),
+                                ) {
+                                    AsyncImage(
+                                        model = song.albumArtUriString,
+                                        contentDescription = song.title,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .fillMaxWidth()
+                                            .height(52.dp)
+                                            .background(
+                                                Brush.verticalGradient(
+                                                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.88f)),
+                                                ),
+                                            ),
+                                    )
+                                    Text(
+                                        text = song.title,
+                                        color = Color.White,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.align(Alignment.BottomStart)
+                                            .padding(horizontal = 9.dp, vertical = 8.dp),
+                                    )
+                                }
+                            } else if (index == 8) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(tileSize)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(
+                                            Brush.linearGradient(
+                                                listOf(
+                                                    MaterialTheme.colorScheme.primaryContainer,
+                                                    MaterialTheme.colorScheme.secondaryContainer,
+                                                    MaterialTheme.colorScheme.tertiaryContainer,
+                                                ),
+                                            ),
+                                        )
+                                        .clickable {
+                                            randomDialTurns += 1
+                                            val pool = randomPool.ifEmpty { visibleSongs }
+                                            pool.randomOrNull()?.let { randomSong ->
+                                                playerViewModel.playSongs(pool, randomSong, "Your random pick")
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Box(
+                                        modifier = Modifier.size(92.dp).rotate(randomDialRotation),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Box(Modifier.align(Alignment.TopCenter).size(22.dp)
+                                            .clip(androidx.compose.foundation.shape.CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary))
+                                        Box(Modifier.align(Alignment.BottomStart).size(18.dp)
+                                            .clip(androidx.compose.foundation.shape.CircleShape)
+                                            .background(MaterialTheme.colorScheme.tertiary))
+                                        Box(Modifier.align(Alignment.BottomEnd).size(26.dp)
+                                            .clip(androidx.compose.foundation.shape.CircleShape)
+                                            .background(MaterialTheme.colorScheme.secondary))
+                                        Surface(
+                                            shape = androidx.compose.foundation.shape.CircleShape,
+                                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                                            shadowElevation = 5.dp,
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Shuffle,
+                                                contentDescription = "Play a random song from your listening history",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.padding(13.dp).size(26.dp),
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                Spacer(Modifier.size(tileSize))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    contextMenuSong?.let { song ->
+        val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
+        val isFavorite = song.id in favoriteSongIds
+        com.theveloper.pixelplay.presentation.components.SongContextBottomSheet(
+            song = song,
+            sheetState = contextMenuSheetState,
+            onDismiss = { contextMenuSong = null },
+            onPlayNext = { playerViewModel.addSongNextToQueue(song) },
+            onAddToQueue = { playerViewModel.addSongToQueue(song) },
+            onAddToPlaylist = { speedDialSongForPlaylist = song },
+            onDownload = {
+                com.theveloper.pixelplay.data.network.ytmusic.YouTubeDownloadManager
+                    .fromContext(context)
+                    .enqueueDownload(song)
+            },
+            isFavorite = isFavorite,
+            onToggleFavorite = {
+                playerViewModel.toggleFavoriteSpecificSong(song, removing = isFavorite)
+            },
+            onAlbum = if (!song.remoteAlbumBrowseId.isNullOrBlank() || song.albumId > 0L) {
+                { playerViewModel.triggerAlbumNavigationFromPlayer(song) }
+            } else null,
+            onArtist = song.artists.firstOrNull()?.remoteBrowseId?.takeIf(String::isNotBlank)?.let { browseId ->
+                { playerViewModel.triggerRemoteArtistNavigationFromPlayer(browseId) }
+            } ?: song.artistId.takeIf { it > 0L }?.let { artistId ->
+                { playerViewModel.triggerArtistNavigationFromPlayer(artistId) }
+            },
+        )
+    }
+
+    speedDialSongForPlaylist?.let { song ->
+        com.theveloper.pixelplay.presentation.components.PlaylistBottomSheet(
+            songs = listOf(song),
+            onDismiss = { speedDialSongForPlaylist = null },
+            bottomBarHeight = 0.dp,
+            playerViewModel = playerViewModel,
+        )
     }
 }
 

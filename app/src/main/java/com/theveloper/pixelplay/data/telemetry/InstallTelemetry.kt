@@ -32,7 +32,7 @@ object InstallTelemetry {
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun hasConsent(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CONSENT, false)
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_CONSENT, true)
 
     fun setConsent(context: Context, enabled: Boolean) {
         val appContext = context.applicationContext

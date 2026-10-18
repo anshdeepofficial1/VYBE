@@ -42,6 +42,7 @@ import com.theveloper.pixelplay.presentation.screens.EditTransitionScreen
 import com.theveloper.pixelplay.presentation.screens.EasterEggScreen
 import com.theveloper.pixelplay.presentation.screens.ExperimentalSettingsScreen
 import com.theveloper.pixelplay.presentation.screens.GenreDetailScreen
+import com.theveloper.pixelplay.presentation.screens.ShelfDetailScreen
 import com.theveloper.pixelplay.presentation.screens.HomeScreen
 import com.theveloper.pixelplay.presentation.screens.LibraryScreen
 import com.theveloper.pixelplay.presentation.screens.MashupScreen
@@ -356,6 +357,16 @@ fun AppNavigation(
                     }
                 } else {
                     Text(stringResource(R.string.nav_error_genre_id_missing), modifier = Modifier)
+                }
+            }
+            composable(
+                route = Screen.ShelfDetail.route,
+                arguments = listOf(navArgument("shelfKey") { type = NavType.StringType }),
+            ) { backStackEntry ->
+                backStackEntry.arguments?.getString("shelfKey")?.let { shelfKey ->
+                    ScreenWrapper(navController = navController, playerViewModel = playerViewModel, animatedVisibilityScope = this) {
+                        ShelfDetailScreen(navController, shelfKey, playerViewModel)
+                    }
                 }
             }
             composable(

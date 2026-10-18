@@ -4,6 +4,7 @@ import android.os.SystemClock
 import com.google.common.truth.Truth.assertThat
 import com.theveloper.pixelplay.data.DailyMixManager
 import com.theveloper.pixelplay.data.model.Song
+import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAccountManager
 import com.theveloper.pixelplay.data.stats.PlaybackStatsRepository
 import io.mockk.coVerify
 import io.mockk.every
@@ -19,6 +20,7 @@ class ListeningStatsTrackerTest {
 
     private val dailyMixManager: DailyMixManager = mockk(relaxed = true)
     private val playbackStatsRepository: PlaybackStatsRepository = mockk(relaxed = true)
+    private val youTubeAccountManager: YouTubeAccountManager = mockk(relaxed = true)
 
     @BeforeEach
     fun setUp() {
@@ -34,7 +36,8 @@ class ListeningStatsTrackerTest {
     fun `finalizeCurrentSession preserves listening longer than track duration`() {
         val tracker = ListeningStatsTracker(
             dailyMixManager = dailyMixManager,
-            playbackStatsRepository = playbackStatsRepository
+            playbackStatsRepository = playbackStatsRepository,
+            youTubeAccountManager = youTubeAccountManager,
         )
         val song = song(
             songId = "looped-song",
@@ -67,13 +70,21 @@ class ListeningStatsTrackerTest {
                 sessionId = any(),
             )
         }
+        coVerify(timeout = 2_000) {
+            youTubeAccountManager.recordPlayback(
+                songId = song.id,
+                listenedMs = listenedMs,
+                durationMs = song.duration,
+            )
+        }
     }
 
     @Test
     fun `onProgress accumulates incremental listening time`() {
         val tracker = ListeningStatsTracker(
             dailyMixManager = dailyMixManager,
-            playbackStatsRepository = playbackStatsRepository
+            playbackStatsRepository = playbackStatsRepository,
+            youTubeAccountManager = youTubeAccountManager,
         )
         val song = song(songId = "song-1")
         val firstChunkMs = 7_000L

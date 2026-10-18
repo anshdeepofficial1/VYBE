@@ -9,6 +9,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -31,6 +32,70 @@ data class YouTubeAccountSnapshot(
 class YouTubeMusicAccountApi @Inject constructor(
     private val httpClient: OkHttpClient,
 ) {
+    /**
+     * Records a play using the authenticated account. YouTube Music normally exposes an
+     * add-to-history feedback token in the `next` response. Some account/client variants
+     * expose only playback tracking URLs, so the tracking ping is a compatible fallback.
+     */
+    suspend fun recordPlayback(
+        cookie: String,
+        videoId: String,
+        listenedMs: Long,
+        durationMs: Long,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val session = createSession(cookie)
+        val next = runCatching {
+            post(
+                session,
+                "next",
+                JSONObject()
+                    .put("videoId", videoId)
+                    .put("playlistId", "RDAMVM$videoId")
+                    .put("isAudioOnly", true),
+            )
+        }.getOrNull()
+        val feedbackToken = next?.let { findFirstString(it, "addToHistoryFeedbackToken") }
+        if (!feedbackToken.isNullOrBlank()) {
+            val accepted = runCatching {
+                post(
+                    session,
+                    "feedback",
+                    JSONObject().put("feedbackTokens", JSONArray().put(feedbackToken)),
+                )
+                true
+            }.getOrDefault(false)
+            if (accepted) return@withContext true
+        }
+
+        val player = runCatching {
+            post(session, "player", JSONObject().put("videoId", videoId).put("contentCheckOk", true))
+        }.getOrNull() ?: return@withContext false
+        val tracking = player.optJSONObject("playbackTracking") ?: return@withContext false
+        val baseUrl = tracking.optJSONObject("videostatsWatchtimeUrl")?.optString("baseUrl")
+            ?.takeIf(String::isNotBlank)
+            ?: tracking.optJSONObject("videostatsPlaybackUrl")?.optString("baseUrl")
+                ?.takeIf(String::isNotBlank)
+            ?: return@withContext false
+        val listenedSeconds = (listenedMs / 1000.0).coerceAtLeast(1.0)
+        val durationSeconds = (durationMs / 1000.0).takeIf { it > 0.0 } ?: listenedSeconds
+        val url = baseUrl.toHttpUrlOrNull()?.newBuilder()
+            ?.setQueryParameter("st", "0")
+            ?.setQueryParameter("et", "${listenedSeconds.coerceAtMost(durationSeconds)}")
+            ?.setQueryParameter("cmt", "$listenedSeconds")
+            ?.build()
+            ?: return@withContext false
+        runCatching {
+            httpClient.newCall(
+                Request.Builder()
+                    .url(url)
+                    .header("Cookie", session.cookie)
+                    .header("User-Agent", USER_AGENT)
+                    .header("Referer", "$ORIGIN/")
+                    .build()
+            ).execute().use { it.isSuccessful }
+        }.getOrDefault(false)
+    }
+
     suspend fun loadSnapshot(cookie: String): YouTubeAccountSnapshot = withContext(Dispatchers.IO) {
         val session = createSession(cookie)
         val accountMenu = post(session, "account/account_menu", JSONObject())

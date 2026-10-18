@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
   "packageName": "com.vybe.musicplayer",
-  "versionName": "0.13.0",
-  "versionCode": 13000,
-  "tag": "v0.13.0",
-  "title": "VYBE 0.13.0 - Major Discovery Update",
-  "notes": "HOME & SEARCH\n• Guest Search opens immediately with Explore categories while YouTube Music discovery loads.\n• Fixed cold-start continuation timeout dropping Quick Picks and valid provider shelves.\n• Added Speed dial with persistent Home visibility/order controls.\n• Removed the misleading empty Your Mix card.\n• Provider shelves, charts, releases, collections, videos and artists remain in provider order when available.",
+  "versionName": "0.14.0",
+  "versionCode": 14000,
+  "tag": "v0.14.0",
+  "title": "VYBE 0.14.0 - Instant Playback and Immersive Artwork",
+  "notes": "PLAYBACK\n• Tapping a song starts audio in about one second, cold start included, by racing the preferred stream resolver against its fallbacks concurrently.\n• All resolvers share a single-flight cache, so a track is never resolved twice and the tapped song keeps a free connection.\n• The liveness probe now sends exactly what the player sends, so dead mirrors lose the race instead of winning and then failing with HTTP 403.\n• Repeated 403 recovery loops that stalled playback after the first buffering pass are gone.\n\nRECOMMENDATIONS\n• No random songs. Discovery no longer samples random seeds from your history, Explore no longer reshuffles its chips daily, and Home no longer repeats shuffled filler rows.\n• The same recording published under several video ids is collapsed to a single card, so the grid never shows a duplicate song.\n• Provider ordering is authoritative and results are never re-ranked by title text.\n• Opening VYBE never starts playback on its own, so nothing is written to your YouTube Music history without a tap.\n\nLOOK AND FEEL\n• Full App artwork: one app-wide blurred cover behind every screen, bar and sheet, with a toggle in Settings.\n• Consistent Energize and Romance labels.\n\nPACKAGE\n• One signed universal APK for Android 8.0+ (ARM64, ARMv7, x86, x86_64). R8-minified and resource-shrunk.",
   "assets": [
     {
       "abi": "universal",
-      "name": "VYBE-v0.13.0-release.apk",
-      "size": 130987409,
-      "sizeBytes": 130987409,
-      "url": "https://github.com/anshdeepofficial1/VYBE/releases/download/v0.13.0/VYBE-v0.13.0-release.apk"
+      "name": "VYBE-v0.14.0-release.apk",
+      "size": 131019689,
+      "sizeBytes": 131019689,
+      "url": "https://github.com/anshdeepofficial1/VYBE/releases/download/v0.14.0/VYBE-v0.14.0-release.apk"
     }
   ]
 }

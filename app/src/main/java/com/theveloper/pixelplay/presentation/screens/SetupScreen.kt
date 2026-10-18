@@ -639,6 +639,14 @@ private fun InstallTelemetryPage() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var enabled by remember { mutableStateOf(InstallTelemetry.hasConsent(context)) }
+    LaunchedEffect(Unit) {
+        // The transparent, privacy-preserving count is enabled by default. A user who
+        // turns it off remains opted out because that explicit choice is persisted.
+        if (enabled) {
+            InstallTelemetry.setConsent(context, true)
+            InstallTelemetry.recordIfDue(context, force = true)
+        }
+    }
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -646,16 +654,23 @@ private fun InstallTelemetryPage() {
     ) {
         Icon(painterResource(R.drawable.rounded_monitoring_24), contentDescription = null, modifier = Modifier.size(72.dp))
         Spacer(Modifier.height(20.dp))
-        Text("Anonymous install count", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text(
+            "Help VYBE count active installs",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
         Spacer(Modifier.height(8.dp))
         Text(
-            "Help show how many devices use VYBE. This sends only a one-way installation hash, app version and Android version - never your email, music, searches or playlists.",
+            "Share a private, anonymous device count so the community can see VYBE grow. " +
+                "Only a one-way installation ID and basic app/device version are sent — never " +
+                "your email, music, searches or playlists.",
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(24.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Share anonymous usage", modifier = Modifier.weight(1f))
+            Text("Count this device anonymously", modifier = Modifier.weight(1f))
             Switch(
                 checked = enabled,
                 onCheckedChange = { selected ->
@@ -728,32 +743,40 @@ fun WelcomePage() {
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Column(
+        Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp)
                 .padding(top = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            shape = RoundedCornerShape(32.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f),
         ) {
-            Text(
-                text = stringResource(R.string.setup_welcome_prefix),
-                style = ExpTitleTypography.displayLarge.copy(
-                    fontSize = 42.sp,
-                    lineHeight = 1.1.em
-                ),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            androidx.compose.foundation.Image(
-                painter = painterResource(R.drawable.vybe_logo_foreground),
-                contentDescription = stringResource(R.string.app_name),
-                colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(
-                    com.theveloper.pixelplay.ui.theme.vybeLogoForegroundColor()
-                ),
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxWidth(0.54f).height(72.dp),
-            )
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 22.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "Welcome to",
+                    style = ExpTitleTypography.headlineLarge.copy(fontSize = 32.sp),
+                    textAlign = TextAlign.Center,
+                )
+                androidx.compose.foundation.Image(
+                    painter = painterResource(R.drawable.vybe_logo_foreground),
+                    contentDescription = stringResource(R.string.app_name),
+                    colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(
+                        com.theveloper.pixelplay.ui.theme.vybeLogoForegroundColor()
+                    ),
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth(0.62f).height(82.dp),
+                )
+                Text(
+                    text = "Your music, tuned to you.",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    textAlign = TextAlign.Center,
+                )
+            }
         }
         Spacer(modifier = Modifier.height(16.dp))
         // Placeholder for vector art
@@ -954,7 +977,7 @@ fun BackupRestorePage(
         buttonText = when {
             uiState.isInspectingBackup -> stringResource(R.string.setup_inspecting_backup)
             uiState.isRestoringBackup -> stringResource(R.string.setup_restoring_backup)
-            else -> stringResource(R.string.setup_import_backup)
+            else -> stringResource(R.string.setup_skip_for_now)
         },
         buttonEnabled = !isBusy,
         icons = persistentListOf(
@@ -964,7 +987,7 @@ fun BackupRestorePage(
             R.drawable.rounded_lyrics_24,
             R.drawable.rounded_monitoring_24
         ),
-        onGrantClicked = onImportClicked
+        onGrantClicked = onSkip
     ) {
         AnimatedVisibility(
             visible = uiState.isInspectingBackup || progress != null
@@ -1015,10 +1038,10 @@ fun BackupRestorePage(
         }
 
         TextButton(
-            onClick = onSkip,
-            enabled = !uiState.isRestoringBackup
+            onClick = onImportClicked,
+            enabled = !isBusy
         ) {
-            Text(stringResource(R.string.setup_skip_for_now), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(stringResource(R.string.setup_import_backup), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

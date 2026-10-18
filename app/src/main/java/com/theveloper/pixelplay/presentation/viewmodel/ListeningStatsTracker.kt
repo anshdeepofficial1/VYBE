@@ -5,6 +5,7 @@ import androidx.media3.common.C
 import com.theveloper.pixelplay.data.DailyMixManager
 import com.theveloper.pixelplay.data.model.Song
 import com.theveloper.pixelplay.data.stats.PlaybackStatsRepository
+import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAccountManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,7 +34,8 @@ import timber.log.Timber
 @Singleton
 class ListeningStatsTracker @Inject constructor(
     private val dailyMixManager: DailyMixManager,
-    private val playbackStatsRepository: PlaybackStatsRepository
+    private val playbackStatsRepository: PlaybackStatsRepository,
+    private val youTubeAccountManager: YouTubeAccountManager,
 ) {
     private var currentSession: ActiveSession? = null
     private var pendingVoluntarySongId: String? = null
@@ -323,6 +325,11 @@ class ListeningStatsTracker @Inject constructor(
             timestamp = timestamp,
             track = track,
             sessionId = sessionId,
+        )
+        youTubeAccountManager.recordPlayback(
+            songId = songId,
+            listenedMs = listened,
+            durationMs = track?.durationMs ?: listened,
         )
     }
 

@@ -29,7 +29,11 @@ class NewPipeStreamResolver @Inject constructor(
 ) {
     private val initialized = AtomicBoolean(false)
 
-    fun resolve(videoId: String, preferLowBitrate: Boolean = false): String? {
+    fun resolve(
+        videoId: String,
+        preferLowBitrate: Boolean = false,
+        targetBitrate: Int? = null,
+    ): String? {
         val cleanId = videoId.removePrefix("yt_").trim()
         if (cleanId.isBlank()) return null
 
@@ -39,7 +43,7 @@ class NewPipeStreamResolver @Inject constructor(
                 ServiceList.YouTube,
                 "https://www.youtube.com/watch?v=$cleanId"
             )
-            selectBestAudio(info.audioStreams, preferLowBitrate)?.content
+            selectBestAudio(info.audioStreams, preferLowBitrate, targetBitrate)?.content
                 // Some current YouTube responses expose only one muxed 360p stream. The app's
                 // audio-only renderer can still extract and play its audio track.
                 ?: selectPlayableMuxedStream(info.videoStreams)?.content
@@ -86,13 +90,20 @@ class NewPipeStreamResolver @Inject constructor(
     internal fun selectBestAudio(
         streams: List<AudioStream>,
         preferLowBitrate: Boolean = false,
+        targetBitrate: Int? = null,
     ): AudioStream? = streams
         .asSequence()
         // YouTube audio-only URLs are commonly labelled DASH even though each AudioStream
         // contains a direct signed URL that Media3 can load on its own.
         .filter { it.isUrl && it.content.startsWith("http") }
         // Prefer a broadly supported M4A/AAC stream, then choose the highest bitrate.
-        .sortedWith(if (preferLowBitrate) {
+        .sortedWith(if (targetBitrate != null) {
+            compareBy<AudioStream> {
+                kotlin.math.abs(
+                    (it.averageBitrate.takeIf { bitrate -> bitrate > 0 } ?: targetBitrate) - targetBitrate
+                )
+            }.thenByDescending { it.format?.name?.contains("M4A", ignoreCase = true) == true }
+        } else if (preferLowBitrate) {
             compareBy<AudioStream> { it.averageBitrate.takeIf { bitrate -> bitrate > 0 } ?: Int.MAX_VALUE }
                 .thenByDescending { it.format?.name?.contains("M4A", ignoreCase = true) == true }
         } else {

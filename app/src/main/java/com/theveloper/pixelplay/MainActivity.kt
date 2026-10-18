@@ -78,10 +78,14 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import coil.compose.AsyncImage
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
@@ -333,6 +337,14 @@ class MainActivity : ComponentActivity() {
 
             val albumColorSchemePair by playerViewModel.themeStateHolder.currentAlbumArtColorSchemePair.collectAsStateWithLifecycle()
 
+            // Full-app immersive artwork. Rendered once at the root, behind every screen, so the
+            // navigation bar, player sheet and all destinations share one continuous blurred
+            // backdrop instead of each screen painting its own copy.
+            val fullAppImmersiveEnabled by playerViewModel.fullAppImmersiveEnabled.collectAsStateWithLifecycle()
+            val appPlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
+            val immersiveArtUri = appPlayerState.currentSong?.albumArtUriString
+            val showImmersiveArtwork = fullAppImmersiveEnabled && immersiveArtUri != null
+
             CompositionLocalProvider(
                 LocalShowScrollbar provides showScrollbar,
                 LocalVybeLogoMode provides logoMode,
@@ -341,7 +353,8 @@ class MainActivity : ComponentActivity() {
                 PixelPlayTheme(
                     darkTheme = useDarkTheme,
                     amoledTheme = appThemeMode == AppThemeMode.AMOLED,
-                    colorSchemePairOverride = albumColorSchemePair
+                    colorSchemePairOverride = albumColorSchemePair,
+                    immersiveArtwork = showImmersiveArtwork
                 ) {
                     var contentVisible by remember { mutableStateOf(false) }
                     val contentAlpha by animateFloatAsState(
@@ -358,8 +371,29 @@ class MainActivity : ComponentActivity() {
 
                     Surface(
                         modifier = Modifier.fillMaxSize().graphicsLayer { alpha = contentAlpha }, 
-                        color = MaterialTheme.colorScheme.background
+                        color = if (showImmersiveArtwork) Color.Transparent else MaterialTheme.colorScheme.background
                     ) {
+                        if (showImmersiveArtwork) {
+                            // Blurred cover as the app-wide backdrop. Kept below the content and
+                            // above nothing else, so every translucent surface in the theme reads
+                            // as tinted glass over the artwork.
+                            AsyncImage(
+                                model = immersiveArtUri,
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .blur(56.dp)
+                                    .graphicsLayer { alpha = 0.92f }
+                            )
+                            // Scrim tuned so white body text keeps contrast on bright covers
+                            // while the artwork colour is still clearly visible.
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.34f))
+                            )
+                        }
                         if (showSetupScreen == null) {
                             SetupGateLoadingScreen()
                         } else {

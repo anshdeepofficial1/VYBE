@@ -16,6 +16,7 @@ import coil.ImageLoaderFactory
 import com.theveloper.pixelplay.data.preferences.UserPreferencesRepository
 import com.theveloper.pixelplay.data.diagnostics.AdvancedPerformanceDiagnosticsController
 import com.theveloper.pixelplay.data.repository.ArtistImageRepository
+import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAccountManager
 import com.theveloper.pixelplay.data.worker.UpdateCheckWorker
 import com.theveloper.pixelplay.data.telegram.TelegramRepository
 import com.theveloper.pixelplay.presentation.viewmodel.LibraryStateHolder
@@ -74,6 +75,9 @@ class PixelPlayApplication : Application(), ImageLoaderFactory, Configuration.Pr
     @Inject
     lateinit var advancedPerformanceDiagnosticsController: dagger.Lazy<AdvancedPerformanceDiagnosticsController>
 
+    @Inject
+    lateinit var youTubeAccountManager: dagger.Lazy<YouTubeAccountManager>
+
 
     private val startupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -87,6 +91,7 @@ class PixelPlayApplication : Application(), ImageLoaderFactory, Configuration.Pr
     private val appLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStart(owner: LifecycleOwner) {
             libraryStateHolder.get().restoreAfterTrimIfNeeded()
+            youTubeAccountManager.get().syncIfDue()
         }
     }
 

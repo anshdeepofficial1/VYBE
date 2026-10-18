@@ -10,6 +10,7 @@ import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAlbum
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeArtist
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeMusicEngine
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeSearchResult
+import com.theveloper.pixelplay.data.network.ytmusic.YouTubeTopResult
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAccountManager
 import com.theveloper.pixelplay.data.preferences.UserPreferencesRepository
 import com.theveloper.pixelplay.data.repository.OnlineMusicRepository
@@ -31,6 +32,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
@@ -71,6 +75,13 @@ class OnlineSearchViewModel @Inject constructor(
 
     private val _searchResultsArtists = MutableStateFlow<List<YouTubeArtist>>(emptyList())
     val searchResultsArtists: StateFlow<List<YouTubeArtist>> = _searchResultsArtists.asStateFlow()
+
+    /**
+     * The provider-authored hero card for the current query, so the "Top result" block matches
+     * YouTube Music instead of falling back to whichever song happened to be first.
+     */
+    private val _searchTopResult = MutableStateFlow<YouTubeTopResult?>(null)
+    val searchTopResult: StateFlow<YouTubeTopResult?> = _searchTopResult.asStateFlow()
 
     // Backward compatibility for legacy observers
     val searchResults: StateFlow<List<Song>> = _searchResultsSongs
@@ -123,6 +134,10 @@ class OnlineSearchViewModel @Inject constructor(
     private var suggestionJob: Job? = null
     private val structuredSearchCache = ConcurrentHashMap<String, YouTubeSearchResult>()
 
+    private fun discoveryAccountScope(): String =
+        if (!youTubeAccountManager.isLoggedInFlow.value) "guest"
+        else "account_${youTubeAccountManager.accountIdentityFlow.value.hashCode()}"
+
     fun setFilter(filter: OnlineSearchFilter) {
         _searchFilter.value = filter
     }
@@ -137,7 +152,12 @@ class OnlineSearchViewModel @Inject constructor(
         // Instant Search Area: Pre-populate from in-memory snapshot in 0ms so user never waits!
         try {
             val cached = searchDiscoveryCache.get()
-            if (cached != null && (cached.bestForYouTracks.isNotEmpty() || cached.aiRecommendations.isNotEmpty())) {
+            // A persisted discovery snapshot is presentation cache, not account data.  Show it
+            // immediately even while account identity is being restored, then replace it with
+            // the signed-in feed below.  Requiring the identity scope here caused a blank
+            // Explore screen during cold starts and after a token refresh.
+            if (cached != null &&
+                (cached.bestForYouTracks.isNotEmpty() || cached.aiRecommendations.isNotEmpty())) {
                 _trendingTracks.value = cached.bestForYouTracks.filter(::isCleanOriginalAudio)
                 baseTrendingTracks = _trendingTracks.value
                 _aiRecommendations.value = cached.aiRecommendations.filter(::isCleanOriginalAudio)
@@ -155,6 +175,24 @@ class OnlineSearchViewModel @Inject constructor(
             searchHistoryEnabled.collectLatest { enabled ->
                 if (enabled) loadRecentSearches() else _recentSearches.value = emptyList()
             }
+        }
+        viewModelScope.launch {
+            combine(
+                youTubeAccountManager.isLoggedInFlow,
+                youTubeAccountManager.interestLabelsFlow,
+                youTubeAccountManager.syncRevisionFlow,
+            ) { loggedIn, interests, revision -> Triple(loggedIn, interests, revision) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collectLatest { (loggedIn, _, _) ->
+                    // Replace the guest discovery snapshot as soon as account sync publishes
+                    // its identity/taste signals. Never show guest recommendations as if they
+                    // belonged to the connected account.
+                    if (loggedIn) {
+                        _aiRecommendations.value = emptyList()
+                    }
+                    loadTrendingAndRecommendations()
+                }
         }
     }
 
@@ -220,14 +258,17 @@ class OnlineSearchViewModel @Inject constructor(
             "trap mix", "lo-fi", "lofi", "cover", "acoustic", "karaoke",
             "ringtone", "status", "whatsapp", "tik tok", "tiktok", "reels", "shorts",
             "bgm", "instrumental", "jukebox", "non stop", "nonstop", "megamix",
-            "compilation", "full album", "all songs", "audios", "edit", "vibes mix"
+            "compilation", "full album", "all songs", "audios", "edit", "vibes mix",
+            "music video", "official video", "lyric video"
         )
         if (bannedTerms.any { combined.contains(it) }) {
             return false
         }
 
         // 3. Must have normal song duration (1 to 10 minutes)
-        if (song.duration !in 60_000L..600_000L) {
+        // Home/chart browse responses sometimes omit duration even for valid music tracks.
+        // Reject known outliers, but do not discard provider-authored songs with unknown length.
+        if (song.duration > 0L && song.duration !in 60_000L..600_000L) {
             return false
         }
 
@@ -246,6 +287,14 @@ class OnlineSearchViewModel @Inject constructor(
                 val historySongs = historyEntries.mapNotNull { it.track?.toSong(it.songId) }
                     .filter(::isCleanOriginalAudio)
                     .distinctBy { it.id }
+                // A local history is available without network access.  Use it as a temporary
+                // first paint instead of leaving Explore blank while the remote shelves refresh.
+                if (_trendingTracks.value.isEmpty() && historySongs.isNotEmpty()) {
+                    _trendingTracks.value = historySongs
+                    baseTrendingTracks = historySongs
+                    _aiRecommendations.value = historySongs.take(12)
+                    _isLoading.value = false
+                }
                 val listenedSongIds = historySongs.map { it.id }.toSet()
                 val listenedArtists = historySongs.map { it.artist }.filter(String::isNotBlank).distinct()
 
@@ -262,10 +311,12 @@ class OnlineSearchViewModel @Inject constructor(
 
                 val region = normalizedRegion(userPrefs.userRegionFlow.first())
 
-                // 1. OuterTune / InnerTune Dynamic Radio Seed Exploration (RDAMVM)
-                // Pick 1-2 random seeds from history to explore fresh musical branches on every launch/refresh!
-                val randomSeeds = historySongs.shuffled().take(2)
-                val seedRadioRequests = randomSeeds.map { seed ->
+                // 1. Radio seed exploration (RDAMVM).
+                // Seeds come from the most recent listening history in order, never a random
+                // sample: discovery must stay a continuation of what the user actually plays,
+                // and a shuffle here is what previously surfaced songs with no relation to them.
+                val historySeeds = historySongs.take(2)
+                val seedRadioRequests = historySeeds.map { seed ->
                     async {
                         runCatching { repository.getAutoplayQueue(seed, region) }.getOrDefault(emptyList())
                     }
@@ -274,6 +325,7 @@ class OnlineSearchViewModel @Inject constructor(
                 val fastRequest = async { repository.getFastPersonalizedDiscovery(interests) }
                 val trendingRequest = async { runCatching { repository.getTrendingTracks(region) } }
                 val releasesRequest = async { runCatching { repository.getLatestReleases(region) } }
+                val homeRequest = async { runCatching { repository.getYouTubeMusicHome(region) } }
 
                 val seedRadioTracks = seedRadioRequests.map { it.await() }.flatten()
                 val fastTracks = withTimeoutOrNull(3_500L) { fastRequest.await() }.orEmpty()
@@ -288,10 +340,23 @@ class OnlineSearchViewModel @Inject constructor(
                     .filter(::isCleanOriginalAudio)
                     .filterNot { it.id in listenedSongIds }
 
-                val trendingResult = withTimeoutOrNull(8_000L) { trendingRequest.await() }
+                val trendingResult = withTimeoutOrNull(3_500L) { trendingRequest.await() }
                     ?: Result.success(emptyList())
-                val releasesResult = withTimeoutOrNull(8_000L) { releasesRequest.await() }
+                // Release validation resolves provider dates and is intentionally slower than
+                // charts. It runs independently, so give it enough time without blocking the
+                // already-visible cached Explore feed.
+                val releasesResult = withTimeoutOrNull(12_000L) { releasesRequest.await() }
                     ?: Result.success(emptyList())
+                // Explore is a browse surface: it must never wait behind a slow Home endpoint.
+                // A later refresh can enrich it, while this bounded request keeps first paint fast.
+                val homeShelves = withTimeoutOrNull(4_500L) { homeRequest.await() }
+                    ?.getOrDefault(emptyList())
+                    .orEmpty()
+                val providerHomeTracks = homeShelves.asSequence()
+                    .flatMap { it.songs.asSequence() }
+                    .distinctBy { it.id }
+                    .filter(::isCleanOriginalAudio)
+                    .toList()
                 val chartTracks = trendingResult.getOrDefault(emptyList()).distinctBy { it.id }
                     .filter(::isCleanOriginalAudio)
                 val releases = releasesResult.getOrDefault(emptyList()).distinctBy { it.id }
@@ -300,6 +365,9 @@ class OnlineSearchViewModel @Inject constructor(
                 if (chartTracks.isNotEmpty()) {
                     baseTrendingTracks = chartTracks
                     _trendingTracks.value = chartTracks
+                } else if (providerHomeTracks.isNotEmpty()) {
+                    baseTrendingTracks = providerHomeTracks
+                    _trendingTracks.value = providerHomeTracks
                 } else if (releases.isNotEmpty()) {
                     _trendingTracks.value = releases
                 } else if (historySongs.isNotEmpty()) {
@@ -310,11 +378,26 @@ class OnlineSearchViewModel @Inject constructor(
                 _discoveryTitle.value = "Best for You"
 
                 // Combined fresh discovery pool
-                val freshDiscoveries = (freshRadioTracks + freshFastTracks + chartTracks.filterNot { it.id in listenedSongIds })
+                val accountConnected = youTubeAccountManager.isLoggedInFlow.value
+                val freshDiscoveries = (if (accountConnected) {
+                    // In account mode, Explore recommendations must originate from that
+                    // account's YouTube Music Home/history graph. Charts remain a separate,
+                    // explicitly labelled surface and must not leak into "Best for You".
+                    providerHomeTracks.filterNot { it.id in listenedSongIds }
+                } else if (historySongs.isNotEmpty()) {
+                    // Once a user has supplied even one real taste signal, do not dilute the
+                    // Explore shelf with unrelated regional charts. The seed radio and artist
+                    // searches are the authoritative recommendation pool.
+                    freshRadioTracks + freshFastTracks
+                } else {
+                    chartTracks + providerHomeTracks
+                })
                     .distinctBy { it.id }
 
                 val finalRecommendationPool = if (freshDiscoveries.isNotEmpty()) {
                     freshDiscoveries
+                } else if (accountConnected) {
+                    historySongs
                 } else {
                     // Graceful fallback if completely offline or empty
                     (historySongs + chartTracks + releases).distinctBy { it.id }
@@ -330,9 +413,12 @@ class OnlineSearchViewModel @Inject constructor(
                 // Save snapshot for next instant startup
                 searchDiscoveryCache.put(
                     SearchDiscoveryCache.DiscoverySnapshot(
-                        bestForYouTracks = _trendingTracks.value,
+                        // A chip/mood request may finish while this refresh is running. Never
+                        // persist that focused result as the next launch's generic Top songs.
+                        bestForYouTracks = baseTrendingTracks.ifEmpty { _trendingTracks.value },
                         aiRecommendations = rankedRecommendations,
                         latestReleases = releases,
+                        accountScope = discoveryAccountScope(),
                     )
                 )
             } catch (cancelled: CancellationException) {
@@ -399,6 +485,31 @@ class OnlineSearchViewModel @Inject constructor(
                 _discoveryTitle.value = "Best for You"
                 if (baseTrendingTracks.isEmpty()) loadTrendingAndRecommendations()
             }
+            "Charts" -> {
+                _discoveryArtists.value = emptyList()
+                _discoveryTitle.value = "Top Charts"
+                searchJob = viewModelScope.launch {
+                    _isLoading.value = true
+                    _searchError.value = null
+                    try {
+                        val region = normalizedRegion(userPrefs.userRegionFlow.first())
+                        val charts = repository.getTrendingTracks(region)
+                            .filter(::isCleanOriginalAudio)
+                            .distinctBy { it.id }
+                        _trendingTracks.value = charts
+                        if (charts.isEmpty()) {
+                            _searchError.value = "YouTube Music did not return a chart for this region."
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        _trendingTracks.value = emptyList()
+                        _searchError.value = error.message ?: "Could not load YouTube Music charts"
+                    } finally {
+                        _isLoading.value = false
+                    }
+                }
+            }
             "Latest Releases" -> {
                 _discoveryArtists.value = emptyList()
                 _discoveryTitle.value = "Latest Releases"
@@ -408,7 +519,7 @@ class OnlineSearchViewModel @Inject constructor(
                     searchJob = viewModelScope.launch {
                         _isLoading.value = true
                         try {
-                            val region = userPrefs.userRegionFlow.first().ifBlank { "IN" }
+                            val region = normalizedRegion(userPrefs.userRegionFlow.first())
                             val releases = repository.getLatestReleases(region)
                             _latestReleaseTracks.value = releases
                             _trendingTracks.value = releases
@@ -428,11 +539,26 @@ class OnlineSearchViewModel @Inject constructor(
                     _isLoading.value = true
                     _searchError.value = null
                     try {
-                        val region = userPrefs.userRegionFlow.first().ifBlank { "IN" }
-                        val result = repository.searchMusicStructured(label, region)
-                        _trendingTracks.value = result.songs
-                        _discoveryArtists.value = result.artists
-                        _discoveryTitle.value = "Because you listen to $label"
+                        val region = normalizedRegion(userPrefs.userRegionFlow.first())
+                        val moodLabels = setOf(
+                            "Workout", "Feel good", "Energize", "Relax", "Romance",
+                            "Romantic", "Focus", "Party", "Chill", "Sleep", "Sad"
+                        )
+                        if (label in moodLabels) {
+                            _trendingTracks.value = repository
+                                .getFastPersonalizedDiscovery(listOf(label))
+                                .filter(::isCleanOriginalAudio)
+                                .distinctBy { it.id }
+                            _discoveryArtists.value = emptyList()
+                            _discoveryTitle.value = "$label for you"
+                        } else {
+                            val result = repository.searchMusicStructured(label, region)
+                            _trendingTracks.value = result.songs
+                                .filter(::isCleanOriginalAudio)
+                                .distinctBy { it.id }
+                            _discoveryArtists.value = result.artists
+                            _discoveryTitle.value = "Because you listen to $label"
+                        }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (error: Exception) {
@@ -454,6 +580,7 @@ class OnlineSearchViewModel @Inject constructor(
         _searchResultsSongs.value = emptyList()
         _searchResultsAlbums.value = emptyList()
         _searchResultsArtists.value = emptyList()
+        _searchTopResult.value = null
         _discoveryArtists.value = emptyList()
         _querySuggestions.value = emptyList()
         _searchError.value = null
@@ -481,6 +608,7 @@ class OnlineSearchViewModel @Inject constructor(
             _searchResultsSongs.value = cached.songs
             _searchResultsAlbums.value = cached.albums
             _searchResultsArtists.value = rankSearchArtists(trimmed, cached.artists)
+            _searchTopResult.value = cached.topResult
             _isLoading.value = false
             loadSuggestions(trimmed)
             return
@@ -514,7 +642,9 @@ class OnlineSearchViewModel @Inject constructor(
                             _searchResultsArtists.value = rankSearchArtists(
                                 trimmed, youtubeResult.artists, youtubeResult.songs
                             )
+                            _searchTopResult.value = youtubeResult.topResult
                             _isLoading.value = false
+                            warmTopResults(_searchResultsSongs.value)
                         }
                     }
 
@@ -548,6 +678,8 @@ class OnlineSearchViewModel @Inject constructor(
                 _searchResultsSongs.value = rankedResult.songs
                 _searchResultsAlbums.value = rankedResult.albums
                 _searchResultsArtists.value = rankedResult.artists
+                _searchTopResult.value = rankedResult.topResult
+                warmTopResults(_searchResultsSongs.value)
                 loadSuggestions(trimmed)
             } catch (cancelled: CancellationException) {
                 // A newer query superseded this request. Cancellation is expected and
@@ -558,6 +690,7 @@ class OnlineSearchViewModel @Inject constructor(
                     _searchResultsSongs.value = emptyList()
                     _searchResultsAlbums.value = emptyList()
                     _searchResultsArtists.value = emptyList()
+                    _searchTopResult.value = null
                     _searchError.value = error.message ?: "Search could not reach YouTube Music"
                 }
             } finally {
@@ -566,19 +699,38 @@ class OnlineSearchViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Warms the stream URLs of the first few search hits so tapping a row starts playing
+     * straight away rather than waiting on an Innertube round trip first. Fire-and-forget and
+     * bounded: results stay usable even if the link cannot support the extra requests.
+     */
+    private fun warmTopResults(songs: List<Song>) {
+        if (songs.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { repository.prefetchStreamUrls(songs, limit = 2) }
+        }
+    }
+
     private fun loadSuggestions(query: String) {
         suggestionJob?.cancel()
         suggestionJob = viewModelScope.launch {
             delay(120)
-            val region = normalizedRegion(runCatching { userPrefs.userRegionFlow.first() }.getOrDefault("IN"))
+            val region = normalizedRegion(runCatching { userPrefs.userRegionFlow.first() }.getOrDefault(""))
             val suggestions = withTimeoutOrNull(3_000L) { engine.getSearchSuggestions(query, region) }.orEmpty()
             if (currentQuery == query) _querySuggestions.value = suggestions
         }
     }
 
-    private fun normalizedRegion(region: String): String =
-        region.takeUnless { it.isBlank() || it.equals("Global", ignoreCase = true) } ?: "IN"
+    private fun normalizedRegion(region: String): String = engine.resolveRegion(region)
 
+    /**
+     * Orders song results.
+     *
+     * Classification is deliberately coarse (a handful of tiers) and the sort is stable, so
+     * inside each tier the provider's own ordering survives. YouTube already ranks its results;
+     * re-scoring every row by text similarity was promoting uploads that merely repeat the query
+     * in the title over the artist's real releases — the "same name, wrong song" problem.
+     */
     private fun rankSearchSongs(
         query: String,
         songs: List<Song>,
@@ -587,32 +739,33 @@ class OnlineSearchViewModel @Inject constructor(
         val normalizedQuery = query.trim().lowercase()
         val tokens = normalizedQuery.split(Regex("\\s+")).filter { it.length > 1 }
         return songs.filter(::isDisplayableMusicSong).distinctBy { it.id }
-            .map { song ->
+            .mapNotNull { song ->
                 val title = song.title.lowercase()
                 val artist = song.artist.lowercase()
                 val album = song.album.lowercase()
-                val score = when {
-                    title == normalizedQuery -> 10000
-                    title.startsWith(normalizedQuery) -> 5000
-                    title.contains(normalizedQuery) -> 2000
-                    artist.contains(normalizedQuery) -> 1000
-                    album.contains(normalizedQuery) -> 500
-                    else -> tokens.sumOf { token ->
-                        (if (title.contains(token)) 20 else 0) +
-                            (if (artist.contains(token)) 12 else 0) +
-                            (if (album.contains(token)) 8 else 0)
-                    }
+                val covered = tokens.count { token ->
+                    title.contains(token) || artist.contains(token) || album.contains(token)
                 }
-                song to score
-            }
-            .filter { (song, score) ->
-                if (!retainRelated) score > 0 else {
-                    val searchable = "${song.title} ${song.artist} ${song.album}".lowercase()
-                    val covered = tokens.count(searchable::contains)
-                    score > 0 && (tokens.size <= 1 || covered >= (tokens.size + 1) / 2)
+                // Keep only rows that actually relate to the query. With a single-token query any
+                // hit counts; a multi-token query needs most of its tokens to be present.
+                val related = when {
+                    tokens.isEmpty() -> true
+                    retainRelated -> covered >= (tokens.size + 1) / 2
+                    else -> covered >= 1
                 }
+                if (!related) return@mapNotNull null
+                val tier = when {
+                    title == normalizedQuery -> 0
+                    artist == normalizedQuery -> 1
+                    artist.contains(normalizedQuery) -> 1
+                    album.contains(normalizedQuery) -> 2
+                    title.startsWith(normalizedQuery) -> 3
+                    title.contains(normalizedQuery) -> 4
+                    else -> 5
+                }
+                song to tier
             }
-            .sortedByDescending { it.second }
+            .sortedBy { it.second }
             .map { it.first }
     }
 
@@ -653,11 +806,12 @@ class OnlineSearchViewModel @Inject constructor(
         matchedTracks: List<Song> = emptyList(),
     ): List<YouTubeArtist> {
         val wanted = query.trim().lowercase()
+        val wantedCompact = wanted.replace(Regex("[^\\p{L}\\p{N}]+"), "")
         val tokens = wanted.split(Regex("\\s+")).filter { it.length > 1 }
         val linkedArtistIds = matchedTracks.flatMap(Song::artists)
             .mapNotNull { it.remoteBrowseId?.takeIf(String::isNotBlank) }
             .toSet()
-        return artists
+        val ranked = artists
             .filter { it.browseId.isNotBlank() && it.name.isNotBlank() }
             .filter { artist ->
                 val coverage = tokens.count(artist.name.lowercase()::contains)
@@ -666,9 +820,12 @@ class OnlineSearchViewModel @Inject constructor(
             .distinctBy { it.browseId }
             .sortedByDescending { artist ->
                 val name = artist.name.trim().lowercase()
+                val compactName = name.replace(Regex("[^\\p{L}\\p{N}]+"), "")
                 val base = when {
+                    compactName == wantedCompact && !artist.subscriberCount.isNullOrBlank() -> 400_000
+                    compactName == wantedCompact && artist.browseId in linkedArtistIds -> 350_000
+                    name == wanted -> 300_000
                     artist.browseId in linkedArtistIds -> 200_000
-                    name == wanted -> 100_000
                     name.startsWith(wanted) -> 50_000
                     name.contains(wanted) -> 20_000
                     else -> tokens.count(name::contains) * 100 +
@@ -680,6 +837,13 @@ class OnlineSearchViewModel @Inject constructor(
                 ) 75_000 else 0
                 base - songNumberPenalty + if (!artist.thumbnailUrl.isNullOrBlank()) 25 else 0
             }
+        // A full artist-name query should resolve to the canonical provider entity,
+        // not a grid of fan/re-upload channels carrying the same keywords.
+        return ranked.filter { artist ->
+            artist.name.lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), "") == wantedCompact
+        }.takeIf { it.isNotEmpty() }
+            ?.take(1)
+            ?: ranked.take(8)
     }
 
     private fun isDisplayableMusicSong(song: Song): Boolean {
@@ -720,7 +884,7 @@ class OnlineSearchViewModel @Inject constructor(
         _searchResultsAlbums.value.firstOrNull {
             it.title.equals(wantedAlbum, ignoreCase = true)
         }?.let { return it.browseId }
-        val region = normalizedRegion(runCatching { userPrefs.userRegionFlow.first() }.getOrDefault("IN"))
+        val region = normalizedRegion(runCatching { userPrefs.userRegionFlow.first() }.getOrDefault(""))
         val hasSpecificAlbum = wantedAlbum.isNotBlank() && !wantedAlbum.equals("YouTube Music", ignoreCase = true)
         val lookupQuery = if (hasSpecificAlbum) "$wantedAlbum ${song.artist}" else "${song.title} ${song.artist}"
         return withTimeoutOrNull(8_000L) {
@@ -743,7 +907,7 @@ class OnlineSearchViewModel @Inject constructor(
             wantedNames.any { it.equals(artist.name, ignoreCase = true) }
         }?.let { return it.browseId }
         val primaryName = wantedNames.firstOrNull() ?: return null
-        val region = normalizedRegion(runCatching { userPrefs.userRegionFlow.first() }.getOrDefault("IN"))
+        val region = normalizedRegion(runCatching { userPrefs.userRegionFlow.first() }.getOrDefault(""))
         return withTimeoutOrNull(8_000L) {
             repository.searchYouTubeMusicStructured(primaryName, region)
                 .artists

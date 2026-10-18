@@ -771,6 +771,9 @@ class PlayerViewModel @Inject constructor(
     val immersiveArtworkEnabled: StateFlow<Boolean> = userPreferencesRepository.immersiveArtworkEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val fullAppImmersiveEnabled: StateFlow<Boolean> = userPreferencesRepository.fullAppImmersiveEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     val animatedArtworkEnabled: StateFlow<Boolean> = userPreferencesRepository.animatedArtworkEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
@@ -1266,6 +1269,9 @@ class PlayerViewModel @Inject constructor(
             playSongs(songs, startSong, queueName, playlistId)
         },
         showSheet = { _isSheetVisible.value = true },
+        extendQueue = { songs, expectedCurrentId ->
+            playbackDispatchStateHolder.extendQueue(songs, expectedCurrentId)
+        },
     )
 
     /**
@@ -3253,6 +3259,9 @@ class PlayerViewModel @Inject constructor(
         runCatching { onlineMusicRepository.getFastPersonalizedDiscovery(listOf(mood)) }
             .onFailure { Timber.e(it, "Failed to load mood playlist for $mood") }
             .getOrDefault(emptyList())
+
+    fun cachedMoodMix(mood: String): List<Song> =
+        onlineMusicRepository.getCachedMoodDiscovery(mood)
 
     fun setMoodColor(mood: String, colorArgb: Long) {
         viewModelScope.launch { userPreferencesRepository.setMoodColor(mood, colorArgb) }

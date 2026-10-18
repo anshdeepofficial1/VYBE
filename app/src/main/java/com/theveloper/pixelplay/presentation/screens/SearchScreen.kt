@@ -250,10 +250,12 @@ fun SearchScreen(
     val discoveryDay = remember { java.time.LocalDate.now().toEpochDay() }
     val genres = remember(sourceGenres, discoveryDay) {
         val instantExplore = listOf(
-            "New releases", "Charts", "Workout", "Feel good", "Energise", "Relax",
+            "New releases", "Charts", "Workout", "Feel good", "Energize", "Relax",
             "Romance", "Focus", "Party", "Indian", "Punjabi", "Hip-Hop"
         ).map { name -> Genre(id = name, name = name) }
-        sourceGenres.ifEmpty { instantExplore }.shuffled(kotlin.random.Random(discoveryDay))
+        // Keep the provider's order. A daily shuffle used to reorder these on every fresh day,
+        // which made Explore look like it was serving a different, unrelated shelf each session.
+        sourceGenres.ifEmpty { instantExplore }
     }
     val stablePlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
     val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()

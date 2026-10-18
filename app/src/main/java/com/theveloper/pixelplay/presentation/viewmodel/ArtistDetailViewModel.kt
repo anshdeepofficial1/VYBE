@@ -45,6 +45,7 @@ data class ArtistDetailUiState(
     val videos: List<Song> = emptyList(),
     val albumSections: List<ArtistAlbumSection> = emptyList(),
     val effectiveImageUrl: String? = null,
+    val subscriberCount: String? = null,
     val isLoading: Boolean = false,
     val error: String? = null
 )
@@ -125,6 +126,12 @@ class ArtistDetailViewModel @Inject constructor(
                             loadOnlineArtistData(idString.removePrefix(REMOTE_ARTIST_PREFIX))
                         idString.startsWith(LOOKUP_ARTIST_PREFIX) ->
                             loadOnlineArtistByName(idString.removePrefix(LOOKUP_ARTIST_PREFIX))
+                        idString.startsWith(COMPOSITE_ARTIST_PREFIX) -> {
+                            val parts = idString.removePrefix(COMPOSITE_ARTIST_PREFIX).split('|', limit = 2)
+                            val localId = parts.firstOrNull()?.toLongOrNull()
+                            val name = parts.getOrNull(1).orEmpty()
+                            if (localId != null) loadArtistData(localId, name) else loadOnlineArtistByName(name)
+                        }
                         idString.toLongOrNull() != null -> loadArtistData(idString.toLong())
                         else -> loadOnlineArtistData(idString)
                     }
@@ -192,6 +199,7 @@ class ArtistDetailViewModel @Inject constructor(
                         videos = profile.videos,
                         albumSections = emptyList(),
                         effectiveImageUrl = effectiveUrl,
+                        subscriberCount = profile.subscribers,
                         isLoading = false,
                     )
                     warmArtistPalette(effectiveUrl)
@@ -216,7 +224,7 @@ class ArtistDetailViewModel @Inject constructor(
         }
     }
 
-    private fun loadArtistData(id: Long) {
+    private fun loadArtistData(id: Long, fallbackName: String = "") {
         currentLoadJob?.cancel()
         currentEnrichmentJob?.cancel()
         currentLoadJob = viewModelScope.launch {
@@ -240,7 +248,8 @@ class ArtistDetailViewModel @Inject constructor(
                     }
                     .collect { (artist, songs) ->
                         if (artist == null) {
-                            _uiState.update {
+                            if (fallbackName.isNotBlank()) loadOnlineArtistByName(fallbackName)
+                            else _uiState.update {
                                 it.copy(error = context.getString(R.string.artist_detail_not_found), isLoading = false)
                             }
                             return@collect
@@ -554,3 +563,4 @@ private const val ALBUM_DETAILS_TIMEOUT_MS = 15_000L
 private const val RELEASE_BATCH_SIZE = 4
 private const val REMOTE_ARTIST_PREFIX = "remote_artist|"
 private const val LOOKUP_ARTIST_PREFIX = "lookup_artist|"
+private const val COMPOSITE_ARTIST_PREFIX = "artist_meta|"

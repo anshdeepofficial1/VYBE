@@ -49,6 +49,9 @@ class TelegramRepository @Inject constructor(
     val authorizationState: Flow<TdApi.AuthorizationState?> = clientManager.authorizationState
     val authErrors: SharedFlow<TdApi.Error> = clientManager.errors
 
+    /** Starts TDLib only when a Telegram surface is actually opened or used. */
+    fun initialize() = clientManager.initializeClient()
+
     fun clearMemoryCache() {
         resolvedPathCache.clear()
         Timber.d("TelegramRepository: Memory cache cleared")

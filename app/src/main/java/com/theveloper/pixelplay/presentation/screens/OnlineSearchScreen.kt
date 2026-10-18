@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -27,6 +28,8 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -34,7 +37,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -42,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -73,10 +79,12 @@ fun OnlineSearchScreen(
     viewModel: OnlineSearchViewModel = hiltViewModel()
 ) {
     val trendingTracks by viewModel.trendingTracks.collectAsStateWithLifecycle()
+    val latestReleaseTracks by viewModel.latestReleaseTracks.collectAsStateWithLifecycle()
     val aiRecommendations by viewModel.aiRecommendations.collectAsStateWithLifecycle()
     val searchResultsSongs by viewModel.searchResultsSongs.collectAsStateWithLifecycle()
     val searchResultsAlbums by viewModel.searchResultsAlbums.collectAsStateWithLifecycle()
     val searchResultsArtists by viewModel.searchResultsArtists.collectAsStateWithLifecycle()
+val searchTopResult by viewModel.searchTopResult.collectAsStateWithLifecycle()
     val searchFilter by viewModel.searchFilter.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val recentSearches by viewModel.recentSearches.collectAsStateWithLifecycle()
@@ -89,13 +97,24 @@ fun OnlineSearchScreen(
     val favoriteSongIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle()
 
     var query by rememberSaveable { mutableStateOf("") }
-    var selectedGenre by rememberSaveable { mutableStateOf<String?>(null) }
+    // This is intentionally not saveable: returning to Explore must start with the
+    // provider discovery page. Recent searches are revealed only after the user taps
+    // the search field during the current screen visit.
+    var searchActivated by remember { mutableStateOf(false) }
+    var selectedGenre by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        // A previous mood selection must not leak into the next Explore visit and appear
+        // under the generic "Top songs" heading.
+        viewModel.selectDiscovery("Best for You")
+    }
 
     // Context menu state
     val contextMenuSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var contextMenuSong by remember { mutableStateOf<Song?>(null) }
     var songForPlaylist by remember { mutableStateOf<Song?>(null) }
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     var isVoiceListening by remember { mutableStateOf(false) }
     var showAmbientRecognition by rememberSaveable { mutableStateOf(false) }
@@ -156,7 +175,12 @@ fun OnlineSearchScreen(
     val bottomPadding = paddingValuesParent.calculateBottomPadding() + MiniPlayerHeight + 16.dp
 
     val isSearching = query.isNotBlank()
-    val discoveryChips = remember { listOf("Best for You", "Latest Releases") }
+    val discoveryChips = remember {
+        listOf(
+            "Best for You", "Latest Releases", "Charts", "Workout", "Feel good",
+            "Energize", "Relax", "Romance", "Focus", "Party", "Punjabi", "Indian",
+        )
+    }
 
     androidx.compose.material3.pulltorefresh.PullToRefreshBox(
         // Cached discovery remains visible during refresh; the centered cold-start
@@ -188,7 +212,11 @@ fun OnlineSearchScreen(
                 DockedSearchBar(
                     inputField = {
                         SearchBarDefaults.InputField(
-                            modifier = Modifier.focusRequester(searchInputFocusRequester),
+                            modifier = Modifier
+                                .focusRequester(searchInputFocusRequester)
+                                .pointerInput(Unit) {
+                                    detectTapGestures(onTap = { searchActivated = true })
+                                },
                             query = query,
                             onQueryChange = {
                                 query = it
@@ -255,25 +283,41 @@ fun OnlineSearchScreen(
         Spacer(modifier = Modifier.height(12.dp))
 
         if (query.isNotBlank() && querySuggestions.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(querySuggestions, key = { "suggestion_$it" }) { suggestion ->
-                    AssistChip(
-                        onClick = {
-                            query = suggestion
-                            selectedGenre = null
-                            viewModel.submitSearch(suggestion)
-                        },
-                        label = { Text(suggestion, maxLines = 1) },
-                    )
+            // YouTube Music lists completions vertically so every suggestion is reachable.
+            // A horizontal chip row only ever exposed the first couple of them.
+            Column(Modifier.fillMaxWidth()) {
+                querySuggestions.forEach { suggestion ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                query = suggestion
+                                selectedGenre = null
+                                viewModel.submitSearch(suggestion)
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            Icons.Rounded.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = suggestion,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
             Spacer(modifier = Modifier.height(10.dp))
         }
 
-        if (query.isBlank() && recentSearches.isNotEmpty()) {
+        if (searchActivated && query.isBlank() && recentSearches.isNotEmpty()) {
             Text(
                 text = "Recent searches",
                 style = MaterialTheme.typography.labelLarge,
@@ -330,29 +374,6 @@ fun OnlineSearchScreen(
                     )
                 }
             }
-        } else {
-            // Genre recommendation chips
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(discoveryChips, key = { "discovery_$it" }) { genre ->
-                    val isSelected = genre == selectedGenre
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = {
-                            if (!isSelected) {
-                                selectedGenre = genre
-                                query = ""
-                                viewModel.clearSearch()
-                                viewModel.selectDiscovery(genre)
-                            }
-                        },
-                        label = { Text(genre) },
-                        shape = RoundedCornerShape(20.dp)
-                    )
-                }
-            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -361,7 +382,7 @@ fun OnlineSearchScreen(
         val hasVisibleSearchResults = searchResultsSongs.isNotEmpty() ||
             searchResultsAlbums.isNotEmpty() || searchResultsArtists.isNotEmpty()
         val hasVisibleDiscovery = trendingTracks.isNotEmpty() || aiRecommendations.isNotEmpty() || discoveryArtists.isNotEmpty()
-        if (isLoading && ((isSearching && !hasVisibleSearchResults) || (!isSearching && !hasVisibleDiscovery))) {
+        if (isLoading && isSearching && !hasVisibleSearchResults) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
@@ -372,7 +393,9 @@ fun OnlineSearchScreen(
                 contentPadding = PaddingValues(bottom = bottomPadding),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                if (searchFilter == OnlineSearchFilter.ALL && searchResultsSongs.isNotEmpty()) {
+                if (searchFilter == OnlineSearchFilter.ALL &&
+                    (searchTopResult != null || searchResultsSongs.isNotEmpty())
+                ) {
                     item(key = "top_result_header") {
                         Text(
                             text = "Top result",
@@ -381,10 +404,130 @@ fun OnlineSearchScreen(
                             modifier = Modifier.padding(horizontal = 16.dp),
                         )
                     }
+                    val hero = searchTopResult
+                    if (hero != null) {
+                        item(key = "top_result_${hero.browseId}_${hero.title}") {
+                            val seedSong = hero.seedSong
+                            ElevatedCard(
+                                onClick = {
+                                    keyboardController?.hide()
+                                    viewModel.rememberSearch(query)
+                                    when {
+                                        hero.representsArtist &&
+                                            hero.browseId.isNotBlank() ->
+                                            navController.navigateSafely(
+                                                Screen.ArtistDetail.createRoute("remote_artist|${hero.browseId}")
+                                            )
+
+                                        hero.representsAlbum &&
+                                            hero.browseId.isNotBlank() ->
+                                            navController.navigateSafely(
+                                                Screen.AlbumDetail.createRoute("remote_album|${hero.browseId}")
+                                            )
+
+                                        seedSong != null ->
+                                            playerViewModel.playOnlineSeed(seedSong, "VYBE Radio")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                shape = RoundedCornerShape(24.dp),
+                            ) {
+                                Column {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                ) {
+                                    AsyncImage(
+                                        model = hero.thumbnailUrl ?: seedSong?.albumArtUriString,
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.size(76.dp).clip(CircleShape),
+                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            text = hero.title,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            text = hero.subtitle.ifBlank { hero.typeLabel },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    if (seedSong != null) {
+                                        FilledIconButton(onClick = {
+                                            keyboardController?.hide()
+                                            viewModel.rememberSearch(query)
+                                            playerViewModel.playOnlineSeed(seedSong, "VYBE Radio")
+                                        }) {
+                                            Icon(
+                                                Icons.Rounded.PlayArrow,
+                                                contentDescription = "Play ${hero.title}",
+                                            )
+                                        }
+                                    }
+                                }
+                                // YouTube Music shows the tracks it pulled for the query inside the
+                                // hero card and leaves them out of the list below. Rendering them here
+                                // keeps that same layout and stops them from disappearing entirely.
+                                val inlineSeeds = hero.seedSongs
+                                    .dropWhile { it.title.equals(hero.title, ignoreCase = true) }
+                                    .take(3)
+                                if (inlineSeeds.isNotEmpty()) {
+                                    inlineSeeds.forEach { seed ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    keyboardController?.hide()
+                                                    viewModel.rememberSearch(query)
+                                                    playerViewModel.playOnlineSeed(seed, "VYBE Radio")
+                                                }
+                                                .padding(horizontal = 14.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        ) {
+                                            AsyncImage(
+                                                model = seed.albumArtUriString,
+                                                contentDescription = null,
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.size(40.dp).clip(CircleShape),
+                                            )
+                                            Column(Modifier.weight(1f)) {
+                                                Text(
+                                                    text = seed.title,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                                Text(
+                                                    text = seed.artist,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                }
+                            }
+                        }
+                    } else {
                     item(key = "top_result_${searchResultsSongs.first().id}") {
                         val topResult = searchResultsSongs.first()
                         ElevatedCard(
                             onClick = {
+                                keyboardController?.hide()
                                 viewModel.rememberSearch(query)
                                 playerViewModel.playOnlineSeed(topResult, "VYBE Radio")
                             },
@@ -419,6 +562,7 @@ fun OnlineSearchScreen(
                                     )
                                 }
                                 FilledIconButton(onClick = {
+                                    keyboardController?.hide()
                                     viewModel.rememberSearch(query)
                                     playerViewModel.playOnlineSeed(topResult, "VYBE Radio")
                                 }) {
@@ -427,30 +571,56 @@ fun OnlineSearchScreen(
                             }
                         }
                     }
+                    }
                 }
 
                 // 1. Songs Section
                 if (searchFilter == OnlineSearchFilter.ALL || searchFilter == OnlineSearchFilter.SONGS) {
                     if (searchResultsSongs.isNotEmpty()) {
+                        val heroSeedIds = searchTopResult?.seedSongIds?.toHashSet() ?: hashSetOf()
                         val visibleSongs = if (searchFilter == OnlineSearchFilter.ALL) {
-                            searchResultsSongs.drop(1).take(7)
+                            val listed = if (heroSeedIds.isNotEmpty()) {
+                                // YouTube Music renders the card's tracks inside the card, so they
+                                // are excluded from the list underneath to avoid showing them twice.
+                                searchResultsSongs.filterNot { it.id in heroSeedIds }
+                            } else {
+                                searchResultsSongs.drop(1)
+                            }
+                            listed.take(7)
                         } else {
                             searchResultsSongs
                         }
                         item(key = "songs_header") {
-                            Text(
-                                text = "Songs",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Songs", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f))
+                                TextButton(onClick = {
+                                    keyboardController?.hide()
+                                    playerViewModel.playSongs(searchResultsSongs, searchResultsSongs.first(), "Search: $query")
+                                }) {
+                                    Text("Play all")
+                                }
+                                IconButton(onClick = { viewModel.setFilter(OnlineSearchFilter.SONGS) }) {
+                                    Icon(Icons.Rounded.ChevronRight, contentDescription = "Open all songs")
+                                }
+                            }
                         }
                         items(
                             count = visibleSongs.size,
                             key = { "song_${visibleSongs[it].id}" }
                         ) { index ->
                             val song = visibleSongs[index]
-                            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .animateItem(
+                                        fadeInSpec = androidx.compose.animation.core.tween(240),
+                                        fadeOutSpec = androidx.compose.animation.core.tween(160),
+                                        placementSpec = androidx.compose.animation.core.spring(
+                                            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
+                                        ),
+                                    )
+                                    .padding(horizontal = 16.dp),
+                            ) {
                                 EnhancedSongListItem(
                                     song = song.copy(artist = "${song.artist} • ${song.album}"),
                                     isPlaying = false,
@@ -459,6 +629,7 @@ fun OnlineSearchScreen(
                                     onLongPress = { contextMenuSong = song },
                                     onMoreOptionsClick = { contextMenuSong = song },
                                     onClick = {
+                                        keyboardController?.hide()
                                         viewModel.rememberSearch(query)
                                         playerViewModel.playOnlineSeed(song, "VYBE Radio")
                                     }
@@ -474,12 +645,13 @@ fun OnlineSearchScreen(
                 if (searchFilter == OnlineSearchFilter.ALL || searchFilter == OnlineSearchFilter.ALBUMS) {
                     if (searchResultsAlbums.isNotEmpty()) {
                         item(key = "albums_header") {
-                            Text(
-                                text = "Albums, Movies & Soundtracks",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Albums, Movies & Soundtracks", style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                IconButton(onClick = { viewModel.setFilter(OnlineSearchFilter.ALBUMS) }) {
+                                    Icon(Icons.Rounded.ChevronRight, contentDescription = "Open all albums")
+                                }
+                            }
                         }
                         itemsIndexed(
                             items = searchResultsAlbums,
@@ -487,7 +659,12 @@ fun OnlineSearchScreen(
                         ) { _, album ->
                             AlbumSearchCard(
                                 album = album,
-                                onClick = { navController.navigate("album_detail/${album.browseId}") }
+                                onClick = {
+                                    keyboardController?.hide()
+                                    navController.navigateSafely(
+                                        Screen.AlbumDetail.createRoute("remote_album|${album.browseId}")
+                                    )
+                                }
                             )
                         }
                     }
@@ -497,12 +674,13 @@ fun OnlineSearchScreen(
                 if (searchFilter == OnlineSearchFilter.ALL || searchFilter == OnlineSearchFilter.ARTISTS) {
                     if (searchResultsArtists.isNotEmpty()) {
                         item(key = "artists_header") {
-                            Text(
-                                text = "Artists",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 16.dp)
-                            )
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Artists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f))
+                                IconButton(onClick = { viewModel.setFilter(OnlineSearchFilter.ARTISTS) }) {
+                                    Icon(Icons.Rounded.ChevronRight, contentDescription = "Open all artists")
+                                }
+                            }
                         }
                         item(key = "artists_grid") {
                             Column(
@@ -516,7 +694,10 @@ fun OnlineSearchScreen(
                                         artist = artist,
                                         modifier = Modifier.weight(1f),
                                         onClick = {
-                                            navController.navigate("artist_detail/${artist.browseId}")
+                                            keyboardController?.hide()
+                                            navController.navigateSafely(
+                                                Screen.ArtistDetail.createRoute("remote_artist|${artist.browseId}")
+                                            )
                                         }
                                     )
                                         }
@@ -556,63 +737,291 @@ fun OnlineSearchScreen(
             }
         } else {
             // ── Idle / Trending View ─────────────────────────────────────────
+            val defaultExploreTracks = remember(aiRecommendations, trendingTracks) {
+                // A one-item local history snapshot is an instant placeholder, not a complete
+                // discovery shelf. Prefer the expanded account/radio pool once it is available.
+                val source = if (aiRecommendations.size > trendingTracks.size) aiRecommendations else trendingTracks
+                // The same recording is frequently published under several video ids (album,
+                // single, topic channel). Collapse those to a single card so the grid never shows
+                // what looks like a random repeat of a song the user just saw.
+                source.distinctBy { song ->
+                    "${song.title.trim().lowercase()}|${song.artist.trim().lowercase()}"
+                }
+            }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = bottomPadding),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
 
-                // AI Recommendations row
-                if ((selectedGenre == null || selectedGenre == "Best for You" || selectedGenre == "Trending") && aiRecommendations.isNotEmpty()) {
-                    item(key = "ai_recommendations_header") {
+                item(key = "explore_title") {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        Text("Explore", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            text = "Recommended for You ✨",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+                            if (isYouTubeMusicConnected) "New music and charts, personalized from your account"
+                            else "Discover what is new and popular on YouTube Music",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            items(aiRecommendations, key = { it.id }) { song ->
-                                RecommendationCard(
-                                    song = song,
-                                    onClick = {
-                                        playerViewModel.playSongs(aiRecommendations, song, "AI Recommendations")
-                                    },
-                                    onLongClick = { contextMenuSong = song }
-                                )
+                    }
+                }
+                item(key = "explore_destinations") {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        listOf(
+                            listOf("New releases", "Charts"),
+                            listOf("Moods and genres"),
+                        ).forEach { destinationRow ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                destinationRow.forEach { title ->
+                            val target = when (title) {
+                                "New releases" -> "Latest Releases"
+                                "Moods and genres" -> "Moods & genres"
+                                else -> title
+                            }
+                            ElevatedCard(
+                                onClick = {
+                                    if (selectedGenre == target) {
+                                        selectedGenre = null
+                                        viewModel.selectDiscovery("Best for You")
+                                    } else {
+                                        selectedGenre = target
+                                        if (target != "Moods & genres") viewModel.selectDiscovery(target)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f).height(74.dp),
+                                shape = RoundedCornerShape(20.dp),
+                                colors = CardDefaults.elevatedCardColors(
+                                    containerColor = if (selectedGenre == target) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else MaterialTheme.colorScheme.surfaceContainerHigh,
+                                ),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = title,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Icon(Icons.Rounded.ChevronRight, contentDescription = "Open $title")
+                                }
+                            }
+                                }
                             }
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
                     }
                 }
 
-                // Trending header
-                if (trendingTracks.isNotEmpty()) {
-                    item(key = "trending_header") {
-                        Text(
-                            text = discoveryTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                        )
-                    }
-                    items(trendingTracks.size, key = { trendingTracks[it].id }) { index ->
-                        val song = trendingTracks[index]
-                        Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                            EnhancedSongListItem(
-                                song = song.copy(artist = "${song.artist} • ${song.album}"),
-                                isPlaying = false,
-                                isCurrentSong = false,
-                                showMoreOptionsButton = true,
-                                onLongPress = { contextMenuSong = song },
-                                onMoreOptionsClick = { contextMenuSong = song },
-                                onClick = {
-                                    playerViewModel.playSongs(trendingTracks, song, discoveryTitle)
-                                }
+                if (latestReleaseTracks.isNotEmpty() && (selectedGenre == null || selectedGenre == "Latest Releases")) {
+                    item(key = "explore_release_shelf") {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("New releases", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 16.dp))
+                            DiscoveryTrackGrid(
+                                songs = latestReleaseTracks.take(8),
+                                onClick = { song -> playerViewModel.playSongs(latestReleaseTracks, song, "New releases") },
+                                onLongClick = { contextMenuSong = it },
                             )
+                        }
+                    }
+                }
+
+                if (selectedGenre == "Latest Releases" && latestReleaseTracks.isEmpty()) {
+                    item(key = "explore_release_status") {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 48.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator()
+                                Text(
+                                    "Loading current releases…",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                Text(
+                                    text = searchError ?: "No current releases were returned for your region.",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                )
+                                Button(onClick = { viewModel.selectDiscovery("Latest Releases") }) {
+                                    Text("Retry")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // A selected mood used to fetch data successfully and then render nothing.
+                // Render both the default Top songs shelf and every focused mood/genre result.
+                val primaryTracks = if (selectedGenre == null) defaultExploreTracks else trendingTracks
+                if (primaryTracks.isNotEmpty() &&
+                    selectedGenre != "Latest Releases" &&
+                    selectedGenre != "Moods & genres" &&
+                    selectedGenre != "Charts") {
+                    item(key = "explore_primary_${selectedGenre ?: "default"}") {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                text = if (selectedGenre == null) "Recommended for you" else discoveryTitle,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                            )
+                            DiscoveryTrackGrid(
+                                songs = primaryTracks.take(8),
+                                onClick = { song -> playerViewModel.playSongs(primaryTracks, song, if (selectedGenre == null) "Recommended for you" else discoveryTitle) },
+                                onLongClick = { contextMenuSong = it },
+                            )
+                        }
+                    }
+                }
+
+                if (selectedGenre != null &&
+                    selectedGenre != "Latest Releases" &&
+                    selectedGenre != "Moods & genres" &&
+                    primaryTracks.isEmpty()) {
+                    item(key = "explore_selected_status_$selectedGenre") {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator()
+                                Text(
+                                    "Loading $selectedGenre…",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                Text(
+                                    text = searchError ?: "No $selectedGenre music was returned for your region.",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center,
+                                )
+                                Button(onClick = { viewModel.selectDiscovery(selectedGenre!!) }) {
+                                    Text("Retry")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Mood/genre destinations remain visible on the complete Explore feed and
+                // while a mood is focused, so a failed/slow request can never leave a blank page.
+                if (selectedGenre == null || selectedGenre == "Moods & genres" ||
+                    selectedGenre in setOf(
+                        "Workout", "Feel good", "Energize", "Relax", "Romance",
+                        "Focus", "Party", "Punjabi", "Indian", "Hip-hop",
+                    )) {
+                    item(key = "instant_explore_header") {
+                        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                            Text(
+                                text = "Moods & genres",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                            )
+                            Text(
+                                text = "Music for every moment",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    item(key = "instant_explore_tiles") {
+                        val instantCategories = remember {
+                            listOf("Workout", "Feel good", "Energize", "Relax", "Romance", "Focus", "Party", "Punjabi", "Indian", "Hip-hop")
+                        }
+                        Column(
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            instantCategories.chunked(2).forEach { rowItems ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    rowItems.forEach { category ->
+                                        ElevatedCard(
+                                            onClick = {
+                                                selectedGenre = category
+                                                viewModel.selectDiscovery(category)
+                                            },
+                                            modifier = Modifier.weight(1f).height(76.dp),
+                                            shape = RoundedCornerShape(18.dp),
+                                            colors = CardDefaults.elevatedCardColors(
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            ),
+                                        ) {
+                                            Box(
+                                                modifier = Modifier.fillMaxSize().padding(14.dp),
+                                                contentAlignment = Alignment.BottomStart,
+                                            ) {
+                                                Text(
+                                                    category,
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (trendingTracks.isNotEmpty() && selectedGenre == "Charts") {
+                    item(key = "explore_chart_shelf") {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                text = discoveryTitle,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 16.dp),
+                            )
+                            DiscoveryTrackGrid(
+                                songs = trendingTracks.take(10),
+                                onClick = { song -> playerViewModel.playSongs(trendingTracks, song, discoveryTitle) },
+                                onLongClick = { contextMenuSong = it },
+                            )
+                        }
+                    }
+                }
+
+                if (selectedGenre == null && !isLoading && !hasVisibleDiscovery && latestReleaseTracks.isEmpty()) {
+                    item(key = "explore_empty") {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 48.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Text(
+                                text = searchError ?: "Explore could not load right now",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                            )
+                            Button(onClick = { viewModel.fetchTrending() }) { Text("Retry") }
+                        }
+                    }
+                } else if (selectedGenre == null && isLoading && !hasVisibleDiscovery && latestReleaseTracks.isEmpty()) {
+                    item(key = "explore_loading") {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(180.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            CircularProgressIndicator()
                         }
                     }
                 }
@@ -804,6 +1213,95 @@ private fun ArtistSearchCard(
             fontWeight = FontWeight.SemiBold,
             overflow = TextOverflow.Ellipsis
         )
+        artist.subscriberCount?.takeIf { it.isNotBlank() }?.let { subscribers ->
+            Text(
+                text = subscribers,
+                maxLines = 1,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryTrackGrid(
+    songs: List<Song>,
+    onClick: (Song) -> Unit,
+    onLongClick: (Song) -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        songs.chunked(2).forEachIndexed { rowIndex, rowSongs ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                rowSongs.forEach { song ->
+                    DiscoveryTrackCard(
+                        song = song,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onClick(song) },
+                        onLongClick = { onLongClick(song) },
+                    )
+                }
+                if (rowSongs.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscoveryTrackCard(
+    song: Song,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    ElevatedCard(
+        modifier = modifier.pointerInput(song.id) {
+            detectTapGestures(
+                onTap = { onClick() },
+                onLongPress = { onLongClick() },
+            )
+        },
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            AsyncImage(
+                model = song.albumArtUriString,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(64.dp).clip(RoundedCornerShape(13.dp)),
+            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = song.title,
+                    maxLines = 2,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    text = song.artist,
+                    maxLines = 1,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 

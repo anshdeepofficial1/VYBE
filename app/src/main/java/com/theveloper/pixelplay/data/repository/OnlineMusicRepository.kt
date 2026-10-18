@@ -13,6 +13,7 @@ import com.theveloper.pixelplay.data.network.ytmusic.YouTubeTrack
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import java.util.concurrent.ConcurrentHashMap
@@ -29,6 +30,9 @@ class OnlineMusicRepository @Inject constructor(
     suspend fun getYouTubeMusicHome(region: String = "IN"): List<YouTubeHomeShelf> =
         youTubeEngine.getHomeShelves(normalizedRegion(region))
 
+    fun getCachedYouTubeMusicHome(region: String = "IN"): List<YouTubeHomeShelf> =
+        youTubeEngine.getCachedHomeShelves(normalizedRegion(region))
+
     private data class MoodSource(
         val browseId: String,
         val aliases: Set<String>,
@@ -39,7 +43,7 @@ class OnlineMusicRepository @Inject constructor(
     private val moodSources = listOf(
         MoodSource("FEmusic_moods_and_genres_chill", setOf("chill", "calm", "easy"), listOf("chill songs", "chill music")),
         MoodSource("FEmusic_moods_and_genres_happy", setOf("happy", "feel good", "joy"), listOf("happy feel good songs", "happy songs")),
-        MoodSource("FEmusic_moods_and_genres_workout", setOf("workout", "gym", "energy"), listOf("workout gym songs", "high energy songs")),
+        MoodSource("FEmusic_moods_and_genres_workout", setOf("workout", "gym", "energy", "energise", "energize"), listOf("workout gym songs", "high energy songs")),
         MoodSource("FEmusic_moods_and_genres_focus", setOf("focus", "study", "work"), listOf("focus study music", "deep focus music")),
         MoodSource("FEmusic_moods_and_genres_romance", setOf("romantic", "romance", "love"), listOf("romantic love songs", "love songs")),
         MoodSource("FEmusic_moods_and_genres_sad", setOf("sad", "heartbreak", "melancholy"), listOf("sad heartbreak songs", "melancholy songs")),
@@ -52,6 +56,13 @@ class OnlineMusicRepository @Inject constructor(
     private fun moodSource(label: String): MoodSource? {
         val normalized = label.trim().lowercase()
         return moodSources.firstOrNull { source -> normalized in source.aliases }
+    }
+
+    fun getCachedMoodDiscovery(label: String): List<Song> {
+        val source = moodSource(label) ?: return emptyList()
+        return youTubeEngine.getCachedMoodTracks(source.browseId)
+            .map(YouTubeTrack::toSong)
+            .distinctBy(Song::id)
     }
     suspend fun searchSongs(query: String, region: String = "IN"): List<Song> = withContext(Dispatchers.IO) {
         var results = youTubeEngine.search(query, region).map { it.toSong() }
@@ -124,7 +135,9 @@ suspend fun getFastPersonalizedDiscovery(interestLabels: List<String>): List<Son
             .distinctBy(String::lowercase)
             .take(3)
 
-        val region = runCatching { userPreferencesRepository.userRegionFlow.first() }.getOrDefault("IN").ifBlank { "IN" }
+        val region = youTubeEngine.resolveRegionAwaitingNetwork(
+            runCatching { userPreferencesRepository.userRegionFlow.first() }.getOrDefault("")
+        )
 
         if (moods.isEmpty()) {
             return@coroutineScope getTrendingTracks(region)
@@ -133,7 +146,23 @@ suspend fun getFastPersonalizedDiscovery(interestLabels: List<String>): List<Son
         val resolvedMoodSources = moods.mapNotNull(::moodSource).distinctBy(MoodSource::browseId)
         // This API also powers artist/genre discovery labels. Only apply strict mood behavior
         // when the caller supplied a known mood; non-mood interests retain normal discovery.
-        if (resolvedMoodSources.isEmpty()) return@coroutineScope getTrendingTracks(region)
+        if (resolvedMoodSources.isEmpty()) {
+            // Interest labels are commonly artist names restored from account/history.  The
+            // previous implementation discarded them and returned a generic chart, which made
+            // one listened song unable to grow into a real taste-based discovery pool.
+            val interestTracks = moods.map { interest ->
+                async(Dispatchers.IO) {
+                    runCatching {
+                        youTubeEngine.searchMusicStructured("$interest songs", region).songs
+                    }.getOrDefault(emptyList())
+                }
+            }.map { it.await() }.flatten()
+                .filter(::isUsefulDiscoverySong)
+                .distinctBy(Song::id)
+            return@coroutineScope filterAndPrioritizeRecommendations(
+                interestTracks.ifEmpty { getTrendingTracks(region) }.take(50)
+            )
+        }
 
         val ytTracks = resolvedMoodSources.map { source ->
             async(Dispatchers.IO) {
@@ -144,12 +173,16 @@ suspend fun getFastPersonalizedDiscovery(interestLabels: List<String>): List<Son
                 if (cached != null) return@async cached
 
                 val songs = runCatching {
+                    // YouTube Music's real mood/category destination is authoritative. Generic
+                    // text search is only a same-provider supplement when that page is sparse.
                     val browseSongs = youTubeEngine.getMoodTracks(source.browseId, region)
-                    val fallbackSongs = if (browseSongs.isEmpty()) {
-                        source.searchQueries.flatMap { query -> youTubeEngine.search(query, region) }
+                        .map(YouTubeTrack::toSong)
+                    val searchedSongs = if (browseSongs.size < 12) {
+                        source.searchQueries.flatMap { query ->
+                            youTubeEngine.searchMusicStructured(query, region).songs
+                        }
                     } else emptyList()
-                    (browseSongs + fallbackSongs)
-                        .map { it.toSong() }
+                    (browseSongs + searchedSongs)
                         .filter(::isUsefulDiscoverySong)
                         .distinctBy(Song::id)
                         .take(50)
@@ -276,8 +309,7 @@ suspend fun getFastPersonalizedDiscovery(interestLabels: List<String>): List<Son
         }
     }
 
-    private fun normalizedRegion(region: String): String =
-        region.takeUnless { it.isBlank() || it.equals("Global", ignoreCase = true) } ?: "IN"
+    private fun normalizedRegion(region: String): String = youTubeEngine.resolveRegion(region)
 
     private fun isUsefulDiscoverySong(song: Song): Boolean {
         val metadata = "${song.title} ${song.artist} ${song.album}".lowercase()
@@ -352,6 +384,40 @@ suspend fun getFastPersonalizedDiscovery(interestLabels: List<String>): List<Son
                 saavnEngine.resolveStreamById(song.id)
             }
             else -> resolvePlaybackUrl(song)
+        }
+    }
+
+    /**
+     * Warms provider stream URLs before the user presses play.
+     *
+     * [com.theveloper.pixelplay.data.service.player.DualPlayerEngine] only resolves a stream
+     * inside [androidx.media3.datasource.ResolvingDataSource], i.e. when ExoPlayer begins
+     * loading the item. On a cold cache that puts a full Innertube round trip - typically 1-3 s,
+     * far worse on a congested link - between the tap and the first audio byte, and it has to
+     * finish before any buffering can start. Resolving ahead of time fills the engine's URL
+     * cache, so that step becomes a hit and the request that used to be serial now overlaps the
+     * queue/metadata call already in flight.
+     *
+     * Failures are swallowed deliberately: a cold resolve at play time still succeeds, so
+     * prefetching can only ever make playback start sooner.
+     */
+    suspend fun prefetchStreamUrls(songs: List<Song>, limit: Int = 2) {
+        val eligible = songs
+            .filter { song ->
+                song.id.startsWith("yt_") || song.id.startsWith("saavn_") ||
+                    song.contentUriString.startsWith("yt://") ||
+                    song.contentUriString.startsWith("saavn://")
+            }
+            .distinctBy { it.id.ifBlank { it.contentUriString } }
+            .take(limit.coerceAtLeast(0))
+        if (eligible.isEmpty()) return
+        // Deliberately sequential. Warming several tracks in parallel launches one full resolver
+        // race per track, and those requests contend for the same link as the track the user is
+        // actually waiting to hear - measured on a congested link the parallel warm added ~17 s
+        // of buffering to a tap. The tap's own race is never queued behind this: it is keyed by
+        // video id through resolveStreamUrlShared, so it starts immediately either way.
+        eligible.forEach { song ->
+            runCatching { resolvePlaybackUrl(song) }
         }
     }
 

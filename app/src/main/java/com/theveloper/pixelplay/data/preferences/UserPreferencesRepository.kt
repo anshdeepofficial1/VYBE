@@ -113,6 +113,24 @@ enum class AlbumArtQuality(val maxSize: Int, val label: String) {
     ORIGINAL(0, "Original - Maximum quality")
 }
 
+/**
+ * Preferred quality for online playback. LOSSLESS never invents or transcodes a
+ * lossless stream: it selects one only when the active provider actually exposes a
+ * lossless codec, otherwise playback falls back to the provider's highest stream.
+ */
+enum class OnlineAudioQuality(val label: String, val description: String) {
+    AUTO("Automatic", "Adapts to network conditions"),
+    DATA_SAVER("Data saver", "Lowest usable bitrate"),
+    NORMAL("Normal", "Balanced quality around 128 kbps"),
+    HIGH("High definition", "Highest provider quality"),
+    LOSSLESS("Lossless / Hi-Res", "Lossless when the source provides it; otherwise highest available");
+
+    companion object {
+        fun fromName(value: String?): OnlineAudioQuality =
+            entries.firstOrNull { it.name == value } ?: AUTO
+    }
+}
+
 enum class NotificationPlayerAction(val displayName: String) {
     REPEAT("Loop / Repeat"),
     SHUFFLE("Shuffle"),
@@ -187,6 +205,7 @@ class UserPreferencesRepository @Inject constructor(
         val NAV_BAR_COMPACT_MODE = booleanPreferencesKey("nav_bar_compact_mode")
         val CAROUSEL_STYLE = stringPreferencesKey("carousel_style")
         val IMMERSIVE_ARTWORK_ENABLED = booleanPreferencesKey("immersive_artwork_enabled")
+        val FULL_APP_IMMERSIVE_ENABLED = booleanPreferencesKey("full_app_immersive_enabled")
         val LIBRARY_NAVIGATION_MODE = stringPreferencesKey("library_navigation_mode")
         val LAUNCH_TAB = stringPreferencesKey("launch_tab")
 
@@ -204,6 +223,7 @@ class UserPreferencesRepository @Inject constructor(
         val KEEP_PLAYING_IN_BACKGROUND = booleanPreferencesKey("keep_playing_in_background")
         val IS_CROSSFADE_ENABLED = booleanPreferencesKey("is_crossfade_enabled")
         val HI_FI_MODE_ENABLED = booleanPreferencesKey("hi_fi_mode_enabled")
+        val ONLINE_AUDIO_QUALITY = stringPreferencesKey("online_audio_quality_v1")
         val SKIP_SILENCE_ENABLED = booleanPreferencesKey("skip_silence_enabled")
         val CROSSFADE_DURATION = intPreferencesKey("crossfade_duration")
         val CUSTOM_GENRES = stringSetPreferencesKey("custom_genres")
@@ -485,6 +505,14 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setHiFiModeEnabled(enabled: Boolean) {
         dataStore.edit { it[PreferencesKeys.HI_FI_MODE_ENABLED] = enabled }
+    }
+
+    val onlineAudioQualityFlow: Flow<OnlineAudioQuality> =
+        pref { OnlineAudioQuality.fromName(it[PreferencesKeys.ONLINE_AUDIO_QUALITY]) }
+            .distinctUntilChanged()
+
+    suspend fun setOnlineAudioQuality(quality: OnlineAudioQuality) {
+        dataStore.edit { it[PreferencesKeys.ONLINE_AUDIO_QUALITY] = quality.name }
     }
 
     val skipSilenceEnabledFlow: Flow<Boolean> =
@@ -1229,10 +1257,19 @@ suspend fun markDirectoryRulesVersionApplied(version: Int) {
     val immersiveArtworkEnabledFlow: Flow<Boolean> =
         pref { it[PreferencesKeys.IMMERSIVE_ARTWORK_ENABLED] ?: false }
 
+    val fullAppImmersiveEnabledFlow: Flow<Boolean> =
+        pref { it[PreferencesKeys.FULL_APP_IMMERSIVE_ENABLED] ?: false }
+
     suspend fun setImmersiveArtworkEnabled(enabled: Boolean) {
         dataStore.edit {
             it[PreferencesKeys.IMMERSIVE_ARTWORK_ENABLED] = enabled
             if (enabled) it[PreferencesKeys.CAROUSEL_STYLE] = CarouselStyle.NO_PEEK
+        }
+    }
+
+    suspend fun setFullAppImmersiveEnabled(enabled: Boolean) {
+        dataStore.edit {
+            it[PreferencesKeys.FULL_APP_IMMERSIVE_ENABLED] = enabled
         }
     }
 

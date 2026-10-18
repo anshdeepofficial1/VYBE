@@ -8,6 +8,7 @@ import com.theveloper.pixelplay.data.telegram.TdlibRequestException
 import com.theveloper.pixelplay.data.telegram.TelegramRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -49,6 +50,9 @@ class TelegramLoginViewModel @Inject constructor(
     val playbackRequest = _playbackRequest.asSharedFlow()
 
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            telegramRepository.initialize()
+        }
         observeAuthorizationErrors()
         observeAuthorizationState()
     }

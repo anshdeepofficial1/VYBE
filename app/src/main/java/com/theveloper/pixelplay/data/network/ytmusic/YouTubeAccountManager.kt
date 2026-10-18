@@ -73,6 +73,9 @@ class YouTubeAccountManager @Inject constructor(
     private val _syncStateFlow = MutableStateFlow(YouTubeSyncState.IDLE)
     val syncStateFlow: StateFlow<YouTubeSyncState> = _syncStateFlow.asStateFlow()
 
+    private val _syncRevisionFlow = MutableStateFlow(prefs.getLong(KEY_LAST_SYNC_TIME, 0L))
+    val syncRevisionFlow: StateFlow<Long> = _syncRevisionFlow.asStateFlow()
+
     private val _syncedCountFlow = MutableStateFlow(prefs.getInt(KEY_SYNCED_COUNT, 0))
     val syncedCountFlow: StateFlow<Int> = _syncedCountFlow.asStateFlow()
     private val _libraryStatsFlow = MutableStateFlow(
@@ -172,6 +175,30 @@ class YouTubeAccountManager @Inject constructor(
         sync(cookie, persistLoginOnSuccess = false)
     }
 
+    /** Refreshes the connected account automatically without making the user press Sync. */
+    fun syncIfDue(force: Boolean = false) {
+        if (!_isLoggedInFlow.value || _syncStateFlow.value == YouTubeSyncState.SYNCING) return
+        val lastSync = prefs.getLong(KEY_LAST_SYNC_TIME, 0L)
+        if (!force && System.currentTimeMillis() - lastSync < AUTO_SYNC_INTERVAL_MS) return
+        syncLibrary()
+    }
+
+    /** Sends a completed VYBE listening session to the connected YouTube Music history. */
+    suspend fun recordPlayback(songId: String, listenedMs: Long, durationMs: Long): Boolean {
+        if (!_isLoggedInFlow.value || listenedMs < MIN_REMOTE_HISTORY_MS) return false
+        val cookie = prefs.getString(KEY_AUTH_COOKIE, null)?.takeIf(String::isNotBlank) ?: return false
+        val videoId = songId
+            .removePrefix("yt_video_")
+            .removePrefix("yt_")
+            .takeIf { YOUTUBE_VIDEO_ID.matches(it) }
+            ?: return false
+        return runCatching {
+            accountApi.recordPlayback(cookie, videoId, listenedMs, durationMs)
+        }.onFailure { error ->
+            Log.w(TAG, "Could not write playback to YouTube Music history", error)
+        }.getOrDefault(false)
+    }
+
     fun setPlaylistSyncEnabled(playlistId: String, enabled: Boolean) {
         val overrides = readSyncOverrides().toMutableMap()
         overrides[playlistId] = enabled
@@ -243,7 +270,9 @@ class YouTubeAccountManager @Inject constructor(
                     _accountAvatarUrlFlow.value = snapshot.accountAvatarUrl
                     _accountIdentityFlow.value = snapshot.accountIdentity
                     _syncStateFlow.value = YouTubeSyncState.SYNCED
-                    prefs.edit().putLong(KEY_LAST_SYNC_TIME, System.currentTimeMillis()).apply()
+                    val syncedAt = System.currentTimeMillis()
+                    prefs.edit().putLong(KEY_LAST_SYNC_TIME, syncedAt).apply()
+                    _syncRevisionFlow.value = syncedAt
                     }
                     .onFailure { error ->
                     Log.e(TAG, "Authenticated YouTube Music sync failed", error)
@@ -547,6 +576,9 @@ class YouTubeAccountManager @Inject constructor(
         const val YOUTUBE_SONG_ID_PREFIX = "yt_"
         const val MIN_LOCAL_MATCH_SCORE = 80
         const val MAX_INTEREST_LABELS = 8
+        const val MIN_REMOTE_HISTORY_MS = 5_000L
+        const val AUTO_SYNC_INTERVAL_MS = 30L * 60L * 1000L
         const val INTEREST_SEPARATOR = "\u001F"
+        val YOUTUBE_VIDEO_ID = Regex("[A-Za-z0-9_-]{11}")
     }
 }

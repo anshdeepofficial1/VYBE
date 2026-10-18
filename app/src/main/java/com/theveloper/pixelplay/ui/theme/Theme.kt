@@ -136,11 +136,31 @@ private fun ColorScheme.asAmoled(): ColorScheme = copy(
     surfaceContainerHighest = Color(0xFF121212),
 )
 
+/**
+ * Makes every surface role translucent so a blurred album artwork layer placed behind the whole
+ * app shows through. The screen background is the most transparent role (it is the largest area,
+ * so it is what actually reveals the artwork), while cards, sheets and bars keep more opacity so
+ * text stays readable and panels still read as elevated surfaces.
+ */
+private fun ColorScheme.asImmersive(): ColorScheme = copy(
+    background = background.copy(alpha = 0.30f),
+    surface = surface.copy(alpha = 0.46f),
+    surfaceVariant = surfaceVariant.copy(alpha = 0.46f),
+    surfaceDim = surfaceDim.copy(alpha = 0.34f),
+    surfaceBright = surfaceBright.copy(alpha = 0.50f),
+    surfaceContainerLowest = surfaceContainerLowest.copy(alpha = 0.42f),
+    surfaceContainerLow = surfaceContainerLow.copy(alpha = 0.48f),
+    surfaceContainer = surfaceContainer.copy(alpha = 0.52f),
+    surfaceContainerHigh = surfaceContainerHigh.copy(alpha = 0.58f),
+    surfaceContainerHighest = surfaceContainerHighest.copy(alpha = 0.64f),
+)
+
 @Composable
 fun PixelPlayTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     amoledTheme: Boolean = false,
     colorSchemePairOverride: ColorSchemePair? = null,
+    immersiveArtwork: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -171,7 +191,7 @@ fun PixelPlayTheme(
 
     CompositionLocalProvider(LocalPixelPlayDarkTheme provides darkTheme) {
         MaterialTheme(
-            colorScheme = finalColorScheme,
+            colorScheme = if (immersiveArtwork) finalColorScheme.asImmersive() else finalColorScheme,
             typography = Typography,
             shapes = Shapes,
             content = content

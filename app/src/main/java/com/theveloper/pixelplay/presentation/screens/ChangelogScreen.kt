@@ -32,6 +32,18 @@ private data class ChangelogRelease(
 
 private val VybeChangelog = listOf(
     ChangelogRelease(
+        version = "0.14.0",
+        date = "18 October 2026",
+        changes = listOf(
+            "Instant playback: Tapping any song now starts audio in about one second, even from a cold start, using a concurrent stream-resolver race with a shared single-flight cache.",
+            "No more 403 recoveries: The stream liveness probe now mirrors Media3's exact request (no Range header, YouTube Music Origin and Referer, Chrome user agent), so dead mirrors lose the race instead of winning it and then failing.",
+            "Recommendation accuracy: Provider ordering is now authoritative and results are never re-ranked by title text, so a search for a Punjabi track can no longer surface an unrelated song with a similar name.",
+            "Immersive artwork: The current cover is blurred across every screen, bar and sheet from one app-wide layer, with a new Full App artwork toggle in Settings.",
+            "Region-correct Home: The storefront country is derived from the connection unless you pick one, so shelves, charts and moods match the region you are actually in.",
+            "Release build: VYBE now ships as a signed, R8-minified and resource-shrunk release APK with verified ad-free playback."
+        )
+    ),
+    ChangelogRelease(
         version = "0.13.0",
         date = "8 September 2026",
         changes = listOf(

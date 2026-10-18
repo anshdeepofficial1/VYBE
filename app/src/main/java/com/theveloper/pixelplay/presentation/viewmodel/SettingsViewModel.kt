@@ -60,6 +60,7 @@ import com.theveloper.pixelplay.data.spotify.SpotifyAccountRepository
 import com.theveloper.pixelplay.data.spotify.SpotifyRemotePlaylist
 import com.theveloper.pixelplay.data.preferences.SongIdentityMode
 import com.theveloper.pixelplay.data.preferences.NotificationPlayerAction
+import com.theveloper.pixelplay.data.preferences.OnlineAudioQuality
 import com.theveloper.pixelplay.utils.AppLocaleManager
 import java.io.File
 
@@ -77,6 +78,7 @@ data class SettingsUiState(
     val navBarCompactMode: Boolean = false,
     val carouselStyle: String = CarouselStyle.NO_PEEK,
     val immersiveArtworkEnabled: Boolean = false,
+    val fullAppImmersiveEnabled: Boolean = false,
     val libraryNavigationMode: String = LibraryNavigationMode.TAB_ROW,
     val launchTab: String = LaunchTab.HOME,
     val keepPlayingInBackground: Boolean = true,
@@ -199,6 +201,7 @@ private sealed interface SettingsUiUpdate {
         val libraryNavigationMode: String,
         val carouselStyle: String,
         val immersiveArtworkEnabled: Boolean,
+        val fullAppImmersiveEnabled: Boolean,
         val launchTab: String,
         val showPlayerFileInfo: Boolean
     ) : SettingsUiUpdate
@@ -260,6 +263,8 @@ class SettingsViewModel @Inject constructor(
 
     val dataSaverEnabled = userPreferencesRepository.dataSaverEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val onlineAudioQuality = userPreferencesRepository.onlineAudioQualityFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), OnlineAudioQuality.AUTO)
     val dynamicIslandEnabled = userPreferencesRepository.dynamicIslandEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val animatedArtworkEnabled = userPreferencesRepository.animatedArtworkEnabledFlow
@@ -279,6 +284,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setDataSaverEnabled(enabled: Boolean) = viewModelScope.launch {
         userPreferencesRepository.setDataSaverEnabled(enabled)
+    }
+
+    fun setOnlineAudioQuality(quality: OnlineAudioQuality) = viewModelScope.launch {
+        userPreferencesRepository.setOnlineAudioQuality(quality)
     }
 
     fun setDynamicIslandEnabled(enabled: Boolean) = viewModelScope.launch {
@@ -1049,6 +1058,7 @@ class SettingsViewModel @Inject constructor(
                 userPreferencesRepository.libraryNavigationModeFlow,
                 userPreferencesRepository.carouselStyleFlow,
                 userPreferencesRepository.immersiveArtworkEnabledFlow,
+                userPreferencesRepository.fullAppImmersiveEnabledFlow,
                 userPreferencesRepository.launchTabFlow,
                 userPreferencesRepository.showPlayerFileInfoFlow
                 ,themePreferencesRepository.logoModeFlow
@@ -1066,9 +1076,10 @@ class SettingsViewModel @Inject constructor(
                     libraryNavigationMode = values[9] as String,
                     carouselStyle = values[10] as String,
                     immersiveArtworkEnabled = values[11] as Boolean,
-                    launchTab = values[12] as String,
-                    showPlayerFileInfo = values[13] as Boolean,
-                    logoMode = values[14] as String
+                    fullAppImmersiveEnabled = values[12] as Boolean,
+                    launchTab = values[13] as String,
+                    showPlayerFileInfo = values[14] as Boolean,
+                    logoMode = values[15] as String
                 )
             }.collect { update ->
                 _uiState.update { state ->
@@ -1086,6 +1097,7 @@ class SettingsViewModel @Inject constructor(
                         libraryNavigationMode = update.libraryNavigationMode,
                         carouselStyle = update.carouselStyle,
                         immersiveArtworkEnabled = update.immersiveArtworkEnabled,
+                        fullAppImmersiveEnabled = update.fullAppImmersiveEnabled,
                         launchTab = update.launchTab,
                         showPlayerFileInfo = update.showPlayerFileInfo
                     )
@@ -1416,6 +1428,12 @@ class SettingsViewModel @Inject constructor(
     fun setImmersiveArtworkEnabled(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setImmersiveArtworkEnabled(enabled)
+        }
+    }
+
+    fun setFullAppImmersiveEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setFullAppImmersiveEnabled(enabled)
         }
     }
 

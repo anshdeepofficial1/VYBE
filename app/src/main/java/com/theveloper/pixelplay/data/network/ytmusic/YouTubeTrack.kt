@@ -115,8 +115,46 @@ data class YouTubeSearchResult(
     val songs: List<Song> = emptyList(),
     val albums: List<YouTubeAlbum> = emptyList(),
     val artists: List<YouTubeArtist> = emptyList(),
-    val videos: List<Song> = emptyList()
+    val videos: List<Song> = emptyList(),
+    /**
+     * YouTube Music's `musicCardShelfRenderer`, the large hero card above the result list.
+     * It is usually the exact entity the query names (the artist, album or song), which is why
+     * showing "the first song instead" drifted from the website.
+     */
+    val topResult: YouTubeTopResult? = null
 )
+
+/**
+ * The hero card YouTube Music places above search results.
+ *
+ * @param typeLabel provider's own type word, e.g. "Artist", "Song", "Album", "Playlist".
+ * @param subtitle provider's descriptor, e.g. "Artist • 167M monthly audience".
+ * @param seedSongs the tracks the card renders inline (up to three). YouTube Music shows these
+ * inside the hero card instead of repeating them in the list underneath, so the UI has to know
+ * which ones they are or a song ends up displayed twice.
+ */
+@Immutable
+data class YouTubeTopResult(
+    val typeLabel: String,
+    val title: String,
+    val subtitle: String,
+    val thumbnailUrl: String?,
+    val browseId: String = "",
+    val pageType: String = "",
+    val seedSongs: List<Song> = emptyList(),
+) {
+    val seedSong: Song? get() = seedSongs.firstOrNull()
+
+    val seedSongIds: List<String> get() = seedSongs.mapNotNull { it.id.takeIf(String::isNotBlank) }
+
+    /** True when the card points at a channel/artist page rather than an album. */
+    val representsArtist: Boolean
+        get() = pageType == "MUSIC_PAGE_TYPE_ARTIST" || browseId.startsWith("UC")
+
+    /** True when the card points at an album page. */
+    val representsAlbum: Boolean
+        get() = pageType == "MUSIC_PAGE_TYPE_ALBUM" || browseId.startsWith("MPRE")
+}
 
 @Immutable
 data class YouTubeArtistProfile(

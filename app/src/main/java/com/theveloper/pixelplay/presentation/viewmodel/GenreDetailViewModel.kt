@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.theveloper.pixelplay.data.model.Genre
 import com.theveloper.pixelplay.data.model.Song
 import com.theveloper.pixelplay.data.repository.MusicRepository
+import com.theveloper.pixelplay.data.repository.OnlineMusicRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -100,6 +101,7 @@ data class GenreDetailUiState(
 @HiltViewModel
 class GenreDetailViewModel @Inject constructor(
     private val musicRepository: MusicRepository,
+    private val onlineMusicRepository: OnlineMusicRepository,
     private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
@@ -152,7 +154,16 @@ class GenreDetailViewModel @Inject constructor(
                             darkColorHex = "#616161", onDarkColorHex = "#FFFFFF"
                         )
 
-                    val songs = musicRepository.getMusicByGenre(genre.name).first()
+                    val localSongs = musicRepository.getMusicByGenre(genre.name).first()
+                    val onlineMoodNames = setOf(
+                        "workout", "feel good", "energise", "energize", "relax",
+                        "romance", "romantic", "focus", "party", "chill", "sleep", "sad"
+                    )
+                    val songs = if (localSongs.isEmpty() && genre.name.trim().lowercase() in onlineMoodNames) {
+                        onlineMusicRepository.getFastPersonalizedDiscovery(listOf(genre.name))
+                    } else {
+                        localSongs
+                    }
                     val artists = musicRepository.getArtists().first()
                     artistMap = artists.associate { it.name.trim().lowercase() to it.imageUrl }
 
@@ -313,4 +324,3 @@ class GenreDetailViewModel @Inject constructor(
         }
     }
 }
-

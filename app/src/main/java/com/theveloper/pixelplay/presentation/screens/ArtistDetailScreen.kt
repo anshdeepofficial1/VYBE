@@ -504,6 +504,7 @@ fun ArtistDetailScreen(
                             artist = artist,
                             effectiveImageUrl = uiState.effectiveImageUrl,
                             songsCount = songs.size,
+                            subscriberCount = uiState.subscriberCount,
                             collapseFraction = collapseFraction,
                             headerHeight = currentTopBarHeightDp,
                             headerImageRequestSize = headerImageRequestSize,
@@ -840,6 +841,7 @@ private fun SharedArtistTopBarProbe(
     artist: Artist,
     effectiveImageUrl: String?,
     songsCount: Int,
+    subscriberCount: String?,
     collapseFraction: Float,
     headerHeight: Dp,
     headerImageRequestSize: Size,
@@ -928,7 +930,7 @@ private fun SharedArtistTopBarProbe(
 
         CollapsibleCommonTopBar(
             title = artist.name,
-            subtitle = formatSongCount(songsCount),
+            subtitle = subscriberCount?.takeIf { it.isNotBlank() } ?: formatSongCount(songsCount),
             collapseFraction = collapseFraction,
             headerHeight = headerHeight,
             onBackClick = onBackPressed,

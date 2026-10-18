@@ -1617,9 +1617,16 @@ fun LibraryScreen(
 
                                         val stableOnAlbumClick: (Album) -> Unit = remember(navController, listeningHistoryAlbums) {
                                             { album: Album ->
+                                                val historyMatch = listeningHistoryAlbums.firstOrNull { candidate ->
+                                                    candidate.id == album.id ||
+                                                        (candidate.title.equals(album.title, ignoreCase = true) &&
+                                                            candidate.artist.equals(album.artist, ignoreCase = true))
+                                                }
+                                                val exactBrowseId = album.remoteBrowseId?.takeIf(String::isNotBlank)
+                                                    ?: historyMatch?.remoteBrowseId?.takeIf(String::isNotBlank)
                                                 val destination = when {
-                                                    !album.remoteBrowseId.isNullOrBlank() ->
-                                                        "remote_album|${album.remoteBrowseId}"
+                                                    exactBrowseId != null ->
+                                                        "remote_album|$exactBrowseId"
                                                     album.id > 0L ->
                                                         "album_meta|${album.id}|${album.title}|${album.artist}"
                                                     else ->
@@ -1662,6 +1669,11 @@ fun LibraryScreen(
                                             bottomBarHeight = bottomBarHeightDp,
                                             currentArtistSortOption = playerUiState.currentArtistSortOption,
                                             onArtistClick = { artist ->
+                                                val historyIdentity = listeningHistoryArtists.firstOrNull { candidate ->
+                                                    candidate.id == artist.id || candidate.name.equals(artist.name, ignoreCase = true)
+                                                }
+                                                val exactArtistBrowseId = artist.remoteBrowseId?.takeIf(String::isNotBlank)
+                                                    ?: historyIdentity?.remoteBrowseId?.takeIf(String::isNotBlank)
                                                 val linkedArtists = listeningHistoryArtists.filter { candidate ->
                                                     candidate.id != artist.id &&
                                                         artist.name.contains(candidate.name, ignoreCase = true)
@@ -1682,9 +1694,9 @@ fun LibraryScreen(
                                                     pendingArtistChoices = choices
                                                 } else {
                                                     val destination = when {
-                                                        !artist.remoteBrowseId.isNullOrBlank() ->
-                                                            "remote_artist|${artist.remoteBrowseId}"
-                                                        artist.id > 0L -> artist.id.toString()
+                                                        exactArtistBrowseId != null ->
+                                                            "remote_artist|$exactArtistBrowseId"
+                                                        artist.id > 0L -> "artist_meta|${artist.id}|${artist.name}"
                                                         else -> "lookup_artist|${artist.name}"
                                                     }
                                                     navController.navigateSafelyReplacing(
@@ -2008,15 +2020,31 @@ fun LibraryScreen(
                 },
                 onDeleteFromDevice = playerViewModel::deleteFromDevice,
                 onNavigateToAlbum = {
+                    val albumDestination = currentSong.remoteAlbumBrowseId
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { "remote_album|$it" }
+                        ?: if (currentSong.albumId > 0L) {
+                            "album_meta|${currentSong.albumId}|${currentSong.album}|${currentSong.albumArtist ?: currentSong.displayArtist}"
+                        } else {
+                            "lookup_album|${currentSong.album}|${currentSong.albumArtist ?: currentSong.displayArtist}"
+                        }
                     navController.navigateSafelyReplacing(
-                        route = Screen.AlbumDetail.createRoute(currentSong.albumId),
+                        route = Screen.AlbumDetail.createRoute(albumDestination),
                         patternToPop = Screen.AlbumDetail.route
                     )
                     showSongInfoBottomSheet = false
                 },
                 onNavigateToArtist = {
+                    val artistDestination = currentSong.artists
+                        .firstNotNullOfOrNull { it.remoteBrowseId?.takeIf(String::isNotBlank) }
+                        ?.let { "remote_artist|$it" }
+                        ?: if (currentSong.artistId > 0L) {
+                            "artist_meta|${currentSong.artistId}|${currentSong.displayArtist}"
+                        } else {
+                            "lookup_artist|${currentSong.displayArtist}"
+                        }
                     navController.navigateSafelyReplacing(
-                        route = Screen.ArtistDetail.createRoute(currentSong.artistId),
+                        route = Screen.ArtistDetail.createRoute(artistDestination),
                         patternToPop = Screen.ArtistDetail.route
                     )
                     showSongInfoBottomSheet = false

@@ -6,6 +6,7 @@ import com.theveloper.pixelplay.data.database.OnlineSongCacheDao
 import com.theveloper.pixelplay.data.database.toSong
 import com.theveloper.pixelplay.data.model.Song
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeHomeShelf
+import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAccountManager
 import com.theveloper.pixelplay.data.preferences.UserPreferencesRepository
 import com.theveloper.pixelplay.data.repository.MusicRepository
 import com.theveloper.pixelplay.data.repository.OnlineMusicRepository
@@ -27,6 +28,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,6 +52,7 @@ class DailyMixStateHolder @Inject constructor(
     private val onlineSongCacheDao: OnlineSongCacheDao,
     private val playbackStatsRepository: PlaybackStatsRepository,
     private val recommendationEngine: UnifiedRecommendationEngine,
+    private val youTubeAccountManager: YouTubeAccountManager,
 ) {
     private data class RemoteHomeData(
         val releases: List<Song>,
@@ -56,6 +62,7 @@ class DailyMixStateHolder @Inject constructor(
     )
     private var scope: CoroutineScope? = null
     private var updateJob: Job? = null
+    private var favoriteIdsSource: kotlinx.coroutines.flow.Flow<Set<String>>? = null
 
         private val _isRefreshing = kotlinx.coroutines.flow.MutableStateFlow(false)
     val isRefreshing: kotlinx.coroutines.flow.StateFlow<Boolean> = _isRefreshing
@@ -86,6 +93,26 @@ class DailyMixStateHolder @Inject constructor(
 
     fun initialize(coroutineScope: CoroutineScope) {
         scope = coroutineScope
+        coroutineScope.launch(Dispatchers.IO) {
+            combine(
+                youTubeAccountManager.isLoggedInFlow,
+                youTubeAccountManager.interestLabelsFlow,
+                youTubeAccountManager.syncRevisionFlow,
+            ) { loggedIn, interests, revision -> Triple(loggedIn, interests, revision) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collectLatest { (loggedIn, _, _) ->
+                    // Login/logout changes the provider's Home response and account scope.
+                    // Rebuild every personalized surface instead of retaining the guest feed.
+                    if (loggedIn) {
+                        _quickPickSongs.value = persistentListOf()
+                        _youtubeHomeShelves.value = emptyList()
+                    }
+                    favoriteIdsSource?.let { favorites ->
+                        updateDailyMix(favorites)
+                    }
+                }
+        }
     }
 
     fun removeFromDailyMix(songId: String) {
@@ -101,6 +128,7 @@ class DailyMixStateHolder @Inject constructor(
         favoriteSongIdsFlow: kotlinx.coroutines.flow.Flow<Set<String>>,
         showRefreshIndicator: Boolean = false,
     ) {
+        favoriteIdsSource = favoriteSongIdsFlow
         updateJob?.cancel()
         updateJob = scope?.launch(Dispatchers.IO) {
             _isRefreshing.value = showRefreshIndicator
@@ -111,9 +139,11 @@ class DailyMixStateHolder @Inject constructor(
                 return@launch
             }
             val favoriteIds = runCatching { favoriteSongIdsFlow.first() }.getOrDefault(emptySet())
+            // Left as the raw preference: every repository entry point normalises it through
+            // YouTubeMusicEngine.resolveRegion, which prefers YouTube's own IP-derived country
+            // over the device locale when the user has not explicitly chosen one.
             val region = runCatching { userPreferencesRepository.userRegionFlow.first() }
-                .getOrDefault("IN")
-                .ifBlank { "IN" }
+                .getOrDefault("")
 
             // 1. Gather online favorites
             val onlineFavorites = runCatching {
@@ -150,13 +180,23 @@ class DailyMixStateHolder @Inject constructor(
                     }.orEmpty()
                 }
                 val homeDeferred = async(Dispatchers.IO) {
-                    withTimeoutOrNull(8_000L) {
+                    // Home is cache-first. Never make the first visible frame wait for a
+                    // continuation chain on a slow provider connection.
+                    withTimeoutOrNull(4_500L) {
                         runCatching { onlineMusicRepository.getYouTubeMusicHome(region) }.getOrNull()
-                    }.orEmpty()
+                    }.orEmpty().ifEmpty {
+                        // getHomeShelves persists its authenticated first page before requesting
+                        // continuations. If a slow continuation hits the outer time budget, keep
+                        // that real personalised page instead of replacing Home with an error.
+                        onlineMusicRepository.getCachedYouTubeMusicHome(region)
+                    }
                 }
                 val relatedDeferred = recentHistorySongs.take(3).map { seed ->
                     async(Dispatchers.IO) {
-                        withTimeoutOrNull(1800L) {
+                        // A single history item is still enough to build a useful radio.  The
+                        // old 1.8 s budget routinely expired on a cold WEB_REMIX session and
+                        // left Home with that same item in both Quick Picks and Listen Again.
+                        withTimeoutOrNull(4_500L) {
                             runCatching { onlineMusicRepository.getAutoplayQueue(seed, region).drop(1).take(20) }.getOrNull()
                         }.orEmpty()
                     }
@@ -182,9 +222,30 @@ class DailyMixStateHolder @Inject constructor(
                 .distinctBy(Song::id)
                 .take(20)
                 .toList()
-            (providerQuickPicks.ifEmpty { guestFallback })
-                .takeIf { it.isNotEmpty() }
-                ?.let { _quickPickSongs.value = it.take(20).toImmutableList() }
+            val historyIds = recentHistorySongs.mapTo(hashSetOf(), Song::id)
+            val providerAndRadioQuickPicks = (relatedDiscovery + providerQuickPicks)
+                .distinctBy(Song::id)
+                .filterNot { it.id in historyIds }
+            val accountShelfFallback = remoteHome.shelves.asSequence()
+                .filterNot { shelf -> shelf.title.contains("listen again", ignoreCase = true) }
+                .flatMap { it.songs.asSequence() }
+                .filterNot { it.id in historyIds }
+                .distinctBy(Song::id)
+                .toList()
+            val visibleQuickPicks = if (youTubeAccountManager.isLoggedInFlow.value) {
+                // Keep account Home provider-authored.  When the provider returns only the
+                // seed card, enrich it from that seed's own watch-next radio and other account
+                // shelves instead of echoing the same card from Listen Again.
+                providerAndRadioQuickPicks.ifEmpty { accountShelfFallback }
+            } else {
+                // Once we have history, Quick Picks must be a continuation of that taste—not
+                // another copy of Listen Again.  Charts are only a cold-start fallback.
+                providerAndRadioQuickPicks.ifEmpty { guestFallback.filterNot { it.id in historyIds } }
+            }
+            // Do not retain an old guest/chart Quick Picks row after an account refresh.
+            // If YouTube did not provide this shelf in the current account response, hide it
+            // rather than presenting stale unrelated tracks as the user's recommendations.
+            _quickPickSongs.value = visibleQuickPicks.take(20).toImmutableList()
             _trendingSongs.value = trending.distinctBy { it.id }.take(30).toImmutableList()
             val loggedOutDiscovery = (latestReleases + trending).distinctBy { it.id }
 
@@ -233,10 +294,24 @@ class DailyMixStateHolder @Inject constructor(
                 .take(10)
                 .toImmutableList()
 
-            // Latest releases are used only for cold-start discovery, never mixed into an
-            // established profile as generic chart filler.
-            val candidateSongs = tasteCandidates.filter(isNotBlocked).ifEmpty { 
-                loggedOutDiscovery.filter(isNotBlocked) 
+            // Mix shelves must recommend around the taste profile, not simply replay the
+            // profile itself. Previously this used tasteCandidates (mostly recent history),
+            // making Listen Again, Quick Picks, Daily Mix and Your Mix near-identical after
+            // one search/play. Build the pool from provider discovery and exclude exact heard
+            // tracks; the history remains a ranking signal through RecommendationProfile.
+            val providerDiscoveryCandidates = (
+                relatedDiscovery +
+                    remoteHome.shelves
+                        .filterNot { it.title.contains("listen again", ignoreCase = true) }
+                        .flatMap { it.songs } +
+                    verifiedRecentReleases +
+                    trending
+                )
+                .filter(isNotBlocked)
+                .filterNot { it.id in heardIds }
+                .distinctBy(Song::id)
+            val candidateSongs = providerDiscoveryCandidates.ifEmpty {
+                loggedOutDiscovery.filter(isNotBlocked).filterNot { it.id in heardIds }
             }
 
             if (candidateSongs.isNotEmpty()) {
@@ -276,7 +351,10 @@ class DailyMixStateHolder @Inject constructor(
                 _dailyMixSongs.value = mix.toImmutableList()
                 userPreferencesRepository.saveDailyMixSongIds(mix.map { it.id })
 
-                val yourMix = dailyMixManager.generateYourMix(rankedCandidates, favoriteIds)
+                val dailyIds = mix.mapTo(hashSetOf(), Song::id)
+                val separateYourMixPool = rankedCandidates.filterNot { it.id in dailyIds }
+                    .ifEmpty { rankedCandidates.drop((rankedCandidates.size / 3).coerceAtLeast(1)) }
+                val yourMix = dailyMixManager.generateYourMix(separateYourMixPool, favoriteIds)
                 _yourMixSongs.value = yourMix.toImmutableList()
                 userPreferencesRepository.saveYourMixSongIds(yourMix.map { it.id })
 

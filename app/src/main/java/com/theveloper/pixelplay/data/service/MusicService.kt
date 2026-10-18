@@ -545,6 +545,12 @@ class MusicService : MediaLibraryService() {
         }
 
         serviceScope.launch {
+            userPreferencesRepository.onlineAudioQualityFlow.collect { quality ->
+                youTubeMusicEngine.setOnlineAudioQuality(quality)
+            }
+        }
+
+        serviceScope.launch {
             userPreferencesRepository.smartEqEnabledFlow.collect { smartEqEnabled = it }
         }
 
@@ -1438,7 +1444,19 @@ class MusicService : MediaLibraryService() {
             val player = engine.masterPlayer
             val nextIndex = player.nextMediaItemIndex
             if (!dataSaverEnabled && nextIndex != androidx.media3.common.C.INDEX_UNSET) {
-                runCatching { replayGainProcessor.prefetch(player.getMediaItemAt(nextIndex)) }
+                val nextItem = player.getMediaItemAt(nextIndex)
+                runCatching { replayGainProcessor.prefetch(nextItem) }
+                // Warm the next track's stream URL too, so an auto-advance on a poor link
+                // starts instantly instead of blocking on an Innertube round trip first.
+                val nextUri = nextItem?.localConfiguration?.uri?.toString()
+                if (nextUri != null && (nextUri.startsWith("yt_") || nextUri.startsWith("yt://"))) {
+                    val nextId = nextUri.removePrefix("yt://").removePrefix("yt_").substringBefore('?')
+                    if (nextId.isNotBlank()) {
+                        appScope.launch(Dispatchers.IO) {
+                            runCatching { youTubeMusicEngine.resolveStreamUrl(nextId) }
+                        }
+                    }
+                }
             }
         }
 
@@ -1863,10 +1881,13 @@ class MusicService : MediaLibraryService() {
             return
         }
 
-        val allowBackgroundPlayback = runCatching {
-            userPreferencesRepository.keepPlayingInBackgroundFlow.first()
-        }.getOrDefault(keepPlayingInBackground)
-        val shouldRestorePlaying = snapshot.playWhenReady && allowBackgroundPlayback
+        // Restore the queue, position, repeat mode and artwork so the player and mini player look
+        // exactly where the user left off, but never start audio by itself. Auto-resuming here
+        // also wrote the restored track into the signed-in YouTube Music account's history with
+        // no user action, which the user never asked for. Playback now waits for an explicit tap
+        // or a media-button command; keep-playing-in-background is still honoured once playback
+        // has actually been started by the user.
+        val shouldRestorePlaying = false
 
         val restoredItems = snapshot.items.mapNotNull(::buildMediaItemFromSnapshot)
         if (restoredItems.isEmpty()) {

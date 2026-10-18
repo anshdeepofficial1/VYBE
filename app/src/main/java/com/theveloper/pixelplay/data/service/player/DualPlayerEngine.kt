@@ -236,6 +236,7 @@ class DualPlayerEngine @Inject constructor(
         // for the whole session (losing the battery saving) and rebuild the player (an
         // audible glitch right after the fade). This keeps offload enabled across crossfades.
         private const val POST_TRANSITION_OFFLOAD_GUARD_MS = 2_000L
+        private const val STREAM_URL_SAFETY_MARGIN_MS = 2L * 60L * 1000L
         private const val MAX_AUXILIARY_TIMELINE_ITEMS = 200
         private val LOCAL_MEDIA_SCHEMES = setOf("content", "file", "android.resource")
         private val REMOTE_MEDIA_SCHEMES = setOf("http", "https", "telegram", "netease", "qqmusic", "navidrome", "jellyfin", "gdrive", "yt", "saavn")
@@ -290,6 +291,21 @@ class DualPlayerEngine @Inject constructor(
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var isFocusLossPause = false
+    private var isApplyingFocusPause = false
+    private var focusRecoveryJob: Job? = null
+
+    private fun pausePlayersForAudioFocus() {
+        // Media3 reports a direct playWhenReady=false assignment as USER_REQUEST. Mark the
+        // assignment so the listener does not mistake a system focus pause for a real user
+        // pause and erase the auto-resume intent.
+        isApplyingFocusPause = true
+        try {
+            playerA.playWhenReady = false
+            playerB?.playWhenReady = false
+        } finally {
+            isApplyingFocusPause = false
+        }
+    }
     private var lastPlayWhenReadyAtMs: Long = 0L
     private var lastPlayingAtMs: Long = 0L
     // Used to distinguish a STATE_BUFFERING caused by a user seek from a real HAL offload
@@ -358,10 +374,26 @@ class DualPlayerEngine @Inject constructor(
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 Timber.tag("TransitionDebug").d("AudioFocus LOSS. Pausing.")
-                isFocusLossPause = false
-                playerA.playWhenReady = false
-                playerB?.playWhenReady = false
+                val auxiliaryPlayer = playerB
+                isFocusLossPause = shouldResumeAfterTransientAudioFocusLoss(
+                    masterPlayWhenReady = playerA.playWhenReady,
+                    masterIsPlaying = playerA.isPlaying,
+                    transitionRunning = transitionRunning,
+                    auxiliaryPlayWhenReady = auxiliaryPlayer?.playWhenReady == true,
+                    auxiliaryIsPlaying = auxiliaryPlayer?.isPlaying == true,
+                )
+                pausePlayersForAudioFocus()
                 abandonAudioFocus()
+                // Calls and many short-form video apps report a full LOSS rather than
+                // LOSS_TRANSIENT. Queue a delayed focus request; Android grants it only after
+                // the call/video releases focus, then the GAIN branch resumes the same item.
+                if (isFocusLossPause) {
+                    focusRecoveryJob?.cancel()
+                    focusRecoveryJob = scope.launch {
+                        delay(750)
+                        if (isFocusLossPause) requestAudioFocus()
+                    }
+                }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 Timber.tag("TransitionDebug").d("AudioFocus LOSS_TRANSIENT. Pausing.")
@@ -373,11 +405,12 @@ class DualPlayerEngine @Inject constructor(
                     auxiliaryPlayWhenReady = auxiliaryPlayer?.playWhenReady == true,
                     auxiliaryIsPlaying = auxiliaryPlayer?.isPlaying == true
                 )
-                playerA.playWhenReady = false
-                auxiliaryPlayer?.playWhenReady = false
+                pausePlayersForAudioFocus()
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 Timber.tag("TransitionDebug").d("AudioFocus GAIN. Resuming if paused by loss.")
+                focusRecoveryJob?.cancel()
+                focusRecoveryJob = null
                 if (isFocusLossPause) {
                     isFocusLossPause = false
                     playerA.playWhenReady = true
@@ -390,9 +423,14 @@ class DualPlayerEngine @Inject constructor(
     // Listener to attach to the active master player (playerA)
     private val masterPlayerListener = object : Player.Listener, AnalyticsListener, ExoPlayer.AudioOffloadListener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-            if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST) {
+            if (!playWhenReady &&
+                reason == Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST &&
+                !isApplyingFocusPause
+            ) {
                 Timber.tag("TransitionDebug").d("User manually paused playback. Clearing isFocusLossPause.")
                 isFocusLossPause = false
+                focusRecoveryJob?.cancel()
+                focusRecoveryJob = null
             }
             if (playWhenReady) {
                 lastPlayWhenReadyAtMs = SystemClock.elapsedRealtime()
@@ -688,11 +726,11 @@ class DualPlayerEngine @Inject constructor(
                     if (!freshUrl.isNullOrBlank() && ::playerA.isInitialized && currentItem != null) {
                         val freshUri = Uri.parse(freshUrl)
                         if (isSaavn) {
-                            resolvedUriCache.put("saavn://$cleanId", freshUri)
-                            resolvedUriCache.put("saavn_$cleanId", freshUri)
+                            cacheResolvedUri("saavn://$cleanId", freshUri)
+                            cacheResolvedUri("saavn_$cleanId", freshUri)
                         } else {
-                            resolvedUriCache.put("yt://$cleanId", freshUri)
-                            resolvedUriCache.put("yt_$cleanId", freshUri)
+                            cacheResolvedUri("yt://$cleanId", freshUri)
+                            cacheResolvedUri("yt_$cleanId", freshUri)
                         }
                         val newItem = currentItem.buildUpon().setUri(freshUri).build()
                         val pos = playerA.currentPosition.coerceAtLeast(0L)
@@ -839,7 +877,34 @@ class DualPlayerEngine @Inject constructor(
     fun getAudioSessionId(): Int = if (::playerA.isInitialized) playerA.audioSessionId else 0
 
     private var isReleased = false
-    private val resolvedUriCache = LruCache<String, Uri>(100)
+
+    /** A resolved playback URI together with the moment its upstream URL stops working. */
+    private data class CachedResolvedUri(val uri: Uri, val expiresAtMs: Long)
+
+    private val resolvedUriCache = LruCache<String, CachedResolvedUri>(100)
+
+    /**
+     * googlevideo URLs embed their own `expire=<epoch seconds>` parameter and are bound to the IP
+     * that requested them. The cache used to hold a resolution forever (until LRU eviction), so a
+     * long queue could hand Media3 a URL that had already died, which the user heard as a mid-song
+     * glitch before the error-recovery path re-resolved it. URLs that advertise no expiry (local
+     * proxy routes for the cloud providers) keep their previous effectively-permanent lifetime.
+     */
+    private fun cacheResolvedUri(key: String, uri: Uri) {
+        resolvedUriCache.put(key, CachedResolvedUri(uri, resolvedUriExpiryMs(uri)))
+    }
+
+    private fun cachedResolvedUri(key: String): Uri? {
+        val entry = resolvedUriCache.get(key) ?: return null
+        if (entry.expiresAtMs > System.currentTimeMillis()) return entry.uri
+        resolvedUriCache.remove(key)
+        return null
+    }
+
+    private fun resolvedUriExpiryMs(uri: Uri): Long {
+        val advertised = uri.getQueryParameter("expire")?.toLongOrNull() ?: return Long.MAX_VALUE
+        return advertised * 1000L - STREAM_URL_SAFETY_MARGIN_MS
+    }
 
     // Whether the OS classifies this as a low-RAM device. Used to cap the player's max
     // prefetch depth so hi-res/lossless buffering (and the second player during a crossfade)
@@ -896,16 +961,36 @@ class DualPlayerEngine @Inject constructor(
         when (result) {
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                 audioFocusRequest = request
+                // A fresh request made after AUDIOFOCUS_LOSS may be granted synchronously.
+                // Android does not send a separate GAIN callback in that case, so resume here
+                // as well. Without this, calls on Samsung devices (and the emulator telephony
+                // stack) paused correctly but remained paused forever after the call ended.
+                if (isFocusLossPause) {
+                    isFocusLossPause = false
+                    focusRecoveryJob?.cancel()
+                    focusRecoveryJob = null
+                    playerA.playWhenReady = true
+                    if (transitionRunning) playerB?.playWhenReady = true
+                }
             }
             AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
                 audioFocusRequest = request
                 isFocusLossPause = true
-                playerA.playWhenReady = false
-                if (transitionRunning) playerB?.playWhenReady = false
+                pausePlayersForAudioFocus()
             }
             else -> {
                 Timber.tag("TransitionDebug").w("AudioFocus Request Failed: $result")
-                playerA.playWhenReady = false
+                pausePlayersForAudioFocus()
+                // A full focus loss is commonly used by calls and some short-form video apps.
+                // Keep probing while that transient owner is active; stop immediately after a
+                // user pause because onPlayWhenReadyChanged clears isFocusLossPause.
+                if (isFocusLossPause) {
+                    focusRecoveryJob?.cancel()
+                    focusRecoveryJob = scope.launch {
+                        delay(1_000)
+                        if (isFocusLossPause) requestAudioFocus()
+                    }
+                }
             }
         }
     }
@@ -1172,10 +1257,7 @@ class DualPlayerEngine @Inject constructor(
                 val scheme = uri.scheme
                 val uriString = uri.toString()
                 if (scheme in CLOUD_PROXY_SCHEMES || uriString.startsWith("yt_") || uriString.startsWith("yt://")) {
-                    val cached = resolvedUriCache.get(uriString)
-                    if (cached != null) {
-                        return dataSpec.buildUpon().setUri(cached).build()
-                    }
+                    cachedResolvedUri(uriString)?.let { return dataSpec.buildUpon().setUri(it).build() }
                     if (scheme == "yt" || scheme == "saavn" || uriString.startsWith("yt_") || uriString.startsWith("yt://") || uriString.startsWith("saavn_") || uriString.startsWith("saavn://")) {
                         val cleanId = when {
                             uriString.startsWith("yt://") -> uriString.removePrefix("yt://")
@@ -1190,7 +1272,7 @@ class DualPlayerEngine @Inject constructor(
                         if (localAudioCache != null && localAudioCache.exists() && localAudioCache.length() > 10_000L) {
                             Timber.tag("DualPlayerEngine").d("resolveDataSpec: Serving from local recent cache for %s", cleanId)
                             val localUri = Uri.fromFile(localAudioCache)
-                            resolvedUriCache.put(uriString, localUri)
+                            resolvedUriCache.put(uriString, CachedResolvedUri(localUri, Long.MAX_VALUE))
                             return dataSpec.buildUpon().setUri(localUri).build()
                         }
                         val snapshot = queueSnapshot
@@ -1208,13 +1290,13 @@ class DualPlayerEngine @Inject constructor(
                         val directUrl = onlineMusicRepository.resolvePlaybackUrlSync(cleanId, title, artist, isSaavn)
                         if (!directUrl.isNullOrBlank()) {
                             val resolvedUri = Uri.parse(directUrl)
-                            resolvedUriCache.put(uriString, resolvedUri)
+                            cacheResolvedUri(uriString, resolvedUri)
                             if (isSaavn) {
-                                resolvedUriCache.put("saavn_$cleanId", resolvedUri)
-                                resolvedUriCache.put("saavn://$cleanId", resolvedUri)
+                                cacheResolvedUri("saavn_$cleanId", resolvedUri)
+                                cacheResolvedUri("saavn://$cleanId", resolvedUri)
                             } else {
-                                resolvedUriCache.put("yt_$cleanId", resolvedUri)
-                                resolvedUriCache.put("yt://$cleanId", resolvedUri)
+                                cacheResolvedUri("yt_$cleanId", resolvedUri)
+                                cacheResolvedUri("yt://$cleanId", resolvedUri)
                             }
                             Timber.tag("DualPlayerEngine").d("resolveDataSpec: Resolved online stream dynamically for %s", cleanId)
                             return dataSpec.buildUpon().setUri(resolvedUri).build()
@@ -1321,7 +1403,7 @@ class DualPlayerEngine @Inject constructor(
 
     suspend fun resolveCloudUri(uri: Uri): Uri = withContext(Dispatchers.IO) {
         val uriString = uri.toString()
-        resolvedUriCache.get(uriString)?.let { return@withContext it }
+        cachedResolvedUri(uriString)?.let { return@withContext it }
 
         val resolved: Uri? = when (uri.scheme) {
             "telegram" -> resolveTelegramUriAsync(uri, uriString)
@@ -1337,7 +1419,7 @@ class DualPlayerEngine @Inject constructor(
         }
 
         if (resolved != null) {
-            resolvedUriCache.put(uriString, resolved)
+            cacheResolvedUri(uriString, resolved)
             return@withContext resolved
         }
         uri
@@ -1349,7 +1431,7 @@ class DualPlayerEngine @Inject constructor(
     suspend fun resolveOnlineSongUri(song: Song): Uri = withContext(Dispatchers.IO) {
         val originalUri = MediaItemBuilder.playbackUri(song)
         val uriString = originalUri.toString()
-        resolvedUriCache.get(uriString)?.let { return@withContext it }
+        cachedResolvedUri(uriString)?.let { return@withContext it }
 
         val streamUrl = onlineMusicRepository.resolvePlaybackUrl(song)
         if (streamUrl.isNullOrBlank()) return@withContext originalUri
@@ -1358,14 +1440,14 @@ class DualPlayerEngine @Inject constructor(
         val cleanId = song.id
             .removePrefix("yt_")
             .removePrefix("saavn_")
-        resolvedUriCache.put(uriString, resolvedUri)
-        resolvedUriCache.put(song.id, resolvedUri)
+        cacheResolvedUri(uriString, resolvedUri)
+        cacheResolvedUri(song.id, resolvedUri)
         if (song.id.startsWith("saavn_") || song.contentUriString.startsWith("saavn://")) {
-            resolvedUriCache.put("saavn_$cleanId", resolvedUri)
-            resolvedUriCache.put("saavn://$cleanId", resolvedUri)
+            cacheResolvedUri("saavn_$cleanId", resolvedUri)
+            cacheResolvedUri("saavn://$cleanId", resolvedUri)
         } else {
-            resolvedUriCache.put("yt_$cleanId", resolvedUri)
-            resolvedUriCache.put("yt://$cleanId", resolvedUri)
+            cacheResolvedUri("yt_$cleanId", resolvedUri)
+            cacheResolvedUri("yt://$cleanId", resolvedUri)
         }
         resolvedUri
     }
@@ -1411,13 +1493,13 @@ class DualPlayerEngine @Inject constructor(
         )
         streamUrl?.let {
             val resolvedUri = Uri.parse(it)
-            resolvedUriCache.put(uriString, resolvedUri)
+            cacheResolvedUri(uriString, resolvedUri)
             if (isSaavn) {
-                resolvedUriCache.put("saavn_$cleanId", resolvedUri)
-                resolvedUriCache.put("saavn://$cleanId", resolvedUri)
+                cacheResolvedUri("saavn_$cleanId", resolvedUri)
+                cacheResolvedUri("saavn://$cleanId", resolvedUri)
             } else {
-                resolvedUriCache.put("yt_$cleanId", resolvedUri)
-                resolvedUriCache.put("yt://$cleanId", resolvedUri)
+                cacheResolvedUri("yt_$cleanId", resolvedUri)
+                cacheResolvedUri("yt://$cleanId", resolvedUri)
             }
             resolvedUri
         }

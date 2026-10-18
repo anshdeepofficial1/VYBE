@@ -16,6 +16,7 @@ class SearchDiscoveryCache @Inject constructor(
         val bestForYouTracks: List<Song> = emptyList(),
         val aiRecommendations: List<Song> = emptyList(),
         val latestReleases: List<Song> = emptyList(),
+        val accountScope: String = "guest",
         val timestamp: Long = System.currentTimeMillis()
     )
 

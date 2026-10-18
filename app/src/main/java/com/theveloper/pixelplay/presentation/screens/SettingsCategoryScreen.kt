@@ -6,6 +6,7 @@ import com.theveloper.pixelplay.presentation.components.BackupModuleSelectionDia
 import com.theveloper.pixelplay.data.preferences.AiPreferencesRepository
 import com.theveloper.pixelplay.data.preferences.SongIdentityMode
 import com.theveloper.pixelplay.data.preferences.HomeSectionPreference
+import com.theveloper.pixelplay.data.preferences.OnlineAudioQuality
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
@@ -235,6 +236,7 @@ fun SettingsCategoryScreen(
     val screenshotPrivacyEnabled by settingsViewModel.screenshotPrivacyEnabled.collectAsStateWithLifecycle()
     val sponsorBlockEnabled by settingsViewModel.sponsorBlockEnabled.collectAsStateWithLifecycle()
     val dataSaverEnabled by settingsViewModel.dataSaverEnabled.collectAsStateWithLifecycle()
+    val onlineAudioQuality by settingsViewModel.onlineAudioQuality.collectAsStateWithLifecycle()
     val dynamicIslandEnabled by settingsViewModel.dynamicIslandEnabled.collectAsStateWithLifecycle()
     val animatedArtworkEnabled by settingsViewModel.animatedArtworkEnabled.collectAsStateWithLifecycle()
     val highRefreshRateEnabled by settingsViewModel.highRefreshRateEnabled.collectAsStateWithLifecycle()
@@ -812,6 +814,19 @@ fun SettingsCategoryScreen(
                                         )
                                     }
                                 )
+                                SwitchSettingItem(
+                                    title = "Full App artwork",
+                                    subtitle = "Blur the current cover across every screen, bar and sheet in VYBE for a fully immersive look.",
+                                    checked = uiState.fullAppImmersiveEnabled,
+                                    onCheckedChange = { settingsViewModel.setFullAppImmersiveEnabled(it) },
+                                    leadingIcon = {
+                                        Icon(
+                                            painterResource(R.drawable.rounded_view_carousel_24),
+                                            null,
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+                                )
                             }
 
                             SettingsSubsection(title = stringResource(R.string.settings_home_collage_section)) {
@@ -961,6 +976,32 @@ fun SettingsCategoryScreen(
                             }
                         }
                         SettingsCategory.PLAYBACK -> {
+                            SettingsSubsection(title = "Audio quality") {
+                                ThemeSelectorItem(
+                                    label = "Streaming quality",
+                                    description = onlineAudioQuality.description,
+                                    options = OnlineAudioQuality.entries.associate { it.name to it.label },
+                                    selectedKey = onlineAudioQuality.name,
+                                    onSelectionChanged = { selected ->
+                                        settingsViewModel.setOnlineAudioQuality(
+                                            OnlineAudioQuality.fromName(selected)
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            painterResource(R.drawable.outline_high_quality_24),
+                                            null,
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                        )
+                                    },
+                                )
+                                Text(
+                                    text = "Lossless is used only when the selected source exposes a real lossless stream. YouTube Music falls back to its highest available AAC/Opus quality.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                                )
+                            }
                             SettingsSubsection(title = "Smart playback") {
                                 SwitchSettingItem(
                                     title = "SponsorBlock",
