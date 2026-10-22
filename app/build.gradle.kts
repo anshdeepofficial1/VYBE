@@ -395,7 +395,7 @@ dependencies {
     testImplementation(libs.androidx.junit)
     testImplementation(libs.androidx.room.testing)
     // Android's unit-test stub does not implement JSONObject iteration.
-    testImplementation("org.json:json:20240303")
+    testImplementation("org.json:json:20260814")
     testImplementation(kotlin("test"))
 
     // Testing (Instrumentation)
