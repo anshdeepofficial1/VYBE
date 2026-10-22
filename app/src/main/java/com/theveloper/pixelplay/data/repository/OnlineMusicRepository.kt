@@ -50,6 +50,16 @@ class OnlineMusicRepository @Inject constructor(
         MoodSource("FEmusic_moods_and_genres_party", setOf("party", "dance", "celebration"), listOf("party dance songs", "celebration songs")),
         MoodSource("FEmusic_moods_and_genres_relax", setOf("relax", "relaxing", "unwind"), listOf("relaxing songs", "unwind music")),
         MoodSource("FEmusic_moods_and_genres_sleep", setOf("sleep", "bedtime", "night"), listOf("sleep music", "bedtime calming music")),
+        // Languages/regions. These are real categories on the same YouTube Music
+        // "moods and genres" page, so they resolve to genuine songs of that language instead of a
+        // keyword search that could land on an upload whose title is just the word "Punjabi".
+        MoodSource("FEmusic_moods_and_genres_punjabi", setOf("punjabi"), listOf("punjabi songs", "punjabi hits")),
+        MoodSource("FEmusic_moods_and_genres_hindi", setOf("hindi", "bollywood"), listOf("hindi songs", "bollywood hits")),
+        MoodSource("FEmusic_moods_and_genres_indian", setOf("indian"), listOf("indian songs", "indian hits")),
+        MoodSource("FEmusic_moods_and_genres_hip-hop", setOf("hip-hop", "hip hop", "rap"), listOf("hip hop songs", "rap songs")),
+        MoodSource("FEmusic_moods_and_genres_tamil", setOf("tamil"), listOf("tamil songs", "tamil hits")),
+        MoodSource("FEmusic_moods_and_genres_telugu", setOf("telugu"), listOf("telugu songs", "telugu hits")),
+        MoodSource("FEmusic_moods_and_genres_english", setOf("english"), listOf("english songs", "english hits")),
     )
     private val moodCache = ConcurrentHashMap<String, MoodCacheEntry>()
 
@@ -214,6 +224,18 @@ suspend fun getFastPersonalizedDiscovery(interestLabels: List<String>): List<Son
         val tracks = youTubeEngine.getLatestReleases(normalizedRegion(region))
         val rawList = tracks.map { it.toSong() }
         filterAndPrioritizeRecommendations(rawList)
+            // The provider can list the same release more than once (an album card plus its lead
+            // track, or two uploads of the same single), which showed up as the same card repeated
+            // in the New releases grid. It is a title shelf, so collapse to one card per title.
+            // Rows whose artist the provider could not resolve are placeholders rather than songs
+            // the listener can identify, so they are dropped instead of listing "Unknown Artist".
+            .filter { song ->
+                song.title.isNotBlank() &&
+                    song.artist.isNotBlank() &&
+                    !song.artist.equals("Unknown Artist", ignoreCase = true) &&
+                    !song.artist.equals("Unknown", ignoreCase = true)
+            }
+            .distinctBy { it.title.trim().lowercase() }
     }
 
     /** Returns a seed-first continuation queue, never the raw search-result collection. */

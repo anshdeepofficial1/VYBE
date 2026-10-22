@@ -50,6 +50,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeExtendedFloatingActionButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -107,6 +108,8 @@ import com.theveloper.pixelplay.R
 import com.theveloper.pixelplay.data.model.Song
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeHomeCollection
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeSettingsSyncState
+import com.theveloper.pixelplay.data.network.ytmusic.isRealSongEntry
+import com.theveloper.pixelplay.presentation.components.rememberStableShelf
 import com.theveloper.pixelplay.data.preferences.CollagePattern
 import com.theveloper.pixelplay.data.preferences.HomeSectionPreference
 import com.theveloper.pixelplay.presentation.components.AlbumArtCollage
@@ -137,6 +140,8 @@ import com.theveloper.pixelplay.presentation.viewmodel.StatsViewModel
 import com.theveloper.pixelplay.presentation.viewmodel.AccountsViewModel
 import com.theveloper.pixelplay.presentation.ytmusic.auth.YouTubeLoginActivity
 import com.theveloper.pixelplay.ui.theme.ExpTitleTypography
+import com.theveloper.pixelplay.ui.theme.LocalImmersiveGlass
+import com.theveloper.pixelplay.ui.theme.glassPanel
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.delay
@@ -179,6 +184,7 @@ fun HomeScreen(
     val dailyMixSongs by playerViewModel.dailyMixSongs.collectAsStateWithLifecycle()
     val curatedYourMixSongs by playerViewModel.yourMixSongs.collectAsStateWithLifecycle()
     val quickPickSongs by playerViewModel.quickPickSongs.collectAsStateWithLifecycle()
+    val frequencySpeedDial by playerViewModel.speedDialSongs.collectAsStateWithLifecycle()
     val trendingSongs by playerViewModel.trendingSongs.collectAsStateWithLifecycle()
     val latestReleaseSongs by playerViewModel.latestReleaseSongs.collectAsStateWithLifecycle()
     val discoverySongs by playerViewModel.discoverySongs.collectAsStateWithLifecycle()
@@ -333,6 +339,11 @@ fun HomeScreen(
     var recentlyPlayedSongs by rememberSaveable { mutableStateOf(latestRecentlyPlayedSongs) }
     val latestRecentlyPlayedSongsState = rememberUpdatedState(latestRecentlyPlayedSongs)
 
+    // Bumped whenever Home becomes visible again (including returning from the background) and by
+    // an explicit refresh. Shelf latching is keyed on it, so rows stay still while the listener is
+    // using Home but are rebuilt from the latest data on the next visit.
+    var homeShelfGeneration by remember { mutableIntStateOf(0) }
+
     LaunchedEffect(latestRecentlyPlayedSongs, lifecycleOwner) {
         val isHomeVisible = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
         if (recentlyPlayedSongs.isEmpty() || !isHomeVisible) {
@@ -345,6 +356,10 @@ fun HomeScreen(
             if (event == Lifecycle.Event.ON_STOP) {
                 recentlyPlayedSongs = latestRecentlyPlayedSongsState.value
             }
+            // Deliberately no generation bump on ON_RESUME. Coming back from another app is not a
+            // request for new content: it was releasing the shelf latch and re-picking the row
+            // every single time, which is the "songs keep changing by themselves" complaint.
+            // Only the explicit refresh buttons move a shelf now.
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
@@ -353,15 +368,22 @@ fun HomeScreen(
     }
 
     val recentlyPlayedQueue = remember(recentlyPlayedSongs) {
-        recentlyPlayedSongs.map { it.song }.toImmutableList()
+        // A history row whose metadata was never cached degrades to a "Online Track" stub. Those
+        // must never reach a shelf, so the placeholder is dropped instead of rendered.
+        recentlyPlayedSongs.map { it.song }
+            .filter { isRealSongEntry(it) }
+            .toImmutableList()
     }
     val providerListenAgain = remember(youtubeHomeShelves) {
         youtubeHomeShelves.firstOrNull { it.title.contains("listen again", ignoreCase = true) }
             ?.songs.orEmpty()
     }
     val listenAgainSongs = remember(providerListenAgain, recentlyPlayedQueue, isYouTubeLoggedIn) {
-        val source = if (isYouTubeLoggedIn) providerListenAgain else providerListenAgain + recentlyPlayedQueue
-        source.distinctBy(::recommendationIdentity).take(10)
+        // The user's own history comes first, most recent first. Provider "Listen Again" only
+        // fills the remaining slots, so the row always reflects what was actually played.
+        (recentlyPlayedQueue + providerListenAgain)
+            .distinctBy(::recommendationIdentity)
+            .take(10)
     }
     // A fresh session ordering prevents Home from presenting the exact same first cards
     // on every launch while keeping the underlying personalised recommendation pool intact.
@@ -370,49 +392,75 @@ fun HomeScreen(
         isYouTubeLoggedIn,
     ) {
         val listenAgainKeys = listenAgainSongs.mapTo(hashSetOf(), ::recommendationIdentity)
+        // The song the listener just played must not come back under a different video id or as a
+        // same-titled upload by another artist. Matching on the title alone is intentional: those
+        // are exactly the "other song with the same name" cards that felt unrelated.
+        val lastPlayedTitle = recentlyPlayedQueue.firstOrNull()?.title?.trim()?.lowercase()
         val nonHistoryShelves = youtubeHomeShelves
             .filterNot { it.title.contains("listen again", ignoreCase = true) }
             .flatMap { it.songs }
         (quickPickSongs + nonHistoryShelves + discoverySongs + latestReleaseSongs + trendingSongs)
             .distinctBy(::recommendationIdentity)
             .filterNot { recommendationIdentity(it) in listenAgainKeys }
+            .filterNot { lastPlayedTitle != null && it.title.trim().lowercase() == lastPlayedTitle }
             .take(10)
     }
-    val speedDialSongs = remember(
-        sessionQuickPicks,
-        listenAgainSongs,
-        providerListenAgain,
-        recentlyPlayedQueue,
-        youtubeHomeShelves,
-        trendingSongs,
-        latestReleaseSongs,
-        discoverySongs,
-        isYouTubeLoggedIn,
-    ) {
-        val reservedIds = sessionQuickPicks.mapTo(hashSetOf(), Song::id)
-        val reservedIdentities = sessionQuickPicks.mapTo(hashSetOf(), ::recommendationIdentity)
-        val candidates = if (isYouTubeLoggedIn) {
-            // Speed Dial represents frequently/recently played account music. Never fill
-            // it from arbitrary discovery/chart shelves just to reach eight cards.
-            providerListenAgain + recentlyPlayedQueue
-        } else {
-            recentlyPlayedQueue + providerListenAgain
-        }
-        candidates
-            .distinctBy(::recommendationIdentity)
-            .filterNot {
-                it.id in reservedIds || recommendationIdentity(it) in reservedIdentities
-            }
-            .take(8)
-    }
-    val speedDialRandomPool = remember(
-        recentlyPlayedQueue,
-        providerListenAgain,
-        speedDialSongs,
-    ) {
-        (recentlyPlayedQueue + providerListenAgain + speedDialSongs)
+    // Speed Dial rotates through the listener's own pool: history first, then the provider's
+    // "listen again" shelf. The refresh button re-seeds the pick so every press shows a genuinely
+    // different set instead of re-rendering the same eight cards.
+    //
+    // The old implementation advanced a rotation offset over the pool. When the pool held exactly
+    // eight songs (a fresh install is usually exactly that) the offset wrapped back to the same
+    // window and the button did visibly nothing.
+    var speedDialGeneration by remember { mutableIntStateOf(0) }
+    // Latch each row once it has settled. Home is assembled from several asynchronous sources
+    // (local history, cache, radio, provider Home), so a later response used to replace a card a
+    // moment after it appeared - including the card the listener was already tapping.
+    val stableQuickPicks = rememberStableShelf(sessionQuickPicks, homeShelfGeneration)
+    val stableListenAgainSongs = rememberStableShelf(listenAgainSongs, homeShelfGeneration)
+    val speedDialPool = remember(recentlyPlayedQueue, providerListenAgain, frequencySpeedDial) {
+        // Most-played first: the engagement ranking leads, then everything else that is
+        // listenable from history, so the default 8 tiles are the user's heaviest songs.
+        (frequencySpeedDial + recentlyPlayedQueue + providerListenAgain)
             .distinctBy(::recommendationIdentity)
             .toImmutableList()
+    }
+    val stableSpeedDialPool = rememberStableShelf(speedDialPool, homeShelfGeneration)
+    var speedDialSongs by remember { mutableStateOf<List<Song>>(emptyList()) }
+    LaunchedEffect(stableSpeedDialPool, stableQuickPicks, speedDialGeneration, homeShelfGeneration) {
+        if (stableSpeedDialPool.isEmpty()) {
+            speedDialSongs = emptyList()
+            return@LaunchedEffect
+        }
+        val reservedIdentities = stableQuickPicks.mapTo(hashSetOf(), ::recommendationIdentity)
+        val eligible = stableSpeedDialPool
+            .filterNot { recommendationIdentity(it) in reservedIdentities }
+            .ifEmpty { stableSpeedDialPool }
+        if (eligible.size <= 8) {
+            // Nothing to rotate - show all of them rather than a duplicate window.
+            speedDialSongs = eligible
+            return@LaunchedEffect
+        }
+        if (speedDialGeneration == 0) {
+            // First paint: the listener's most-played songs, in play-count order.
+            speedDialSongs = eligible.take(8)
+            return@LaunchedEffect
+        }
+        val previous = speedDialSongs.mapTo(hashSetOf(), ::recommendationIdentity)
+        var picked = emptyList<Song>()
+        var attempt = 0
+        while (attempt < 16) {
+            val seeded = eligible.shuffled(
+                kotlin.random.Random(speedDialGeneration.toLong() * 1_000_003L + attempt)
+            )
+            picked = seeded.take(8)
+            if (picked.mapTo(hashSetOf(), ::recommendationIdentity) != previous) break
+            attempt++
+        }
+        speedDialSongs = picked
+    }
+    val speedDialRandomPool = remember(stableSpeedDialPool) {
+        stableSpeedDialPool
     }
     val historySeed = recentlyPlayedQueue.firstOrNull()
     val relatedSongs = remember(historySeed, quickPickSongs, dailyMixSongs) {
@@ -573,8 +621,21 @@ fun HomeScreen(
                                     }
                                 },
                                 shape = RoundedCornerShape(18.dp),
-                                color = if (selectedHomeMood == mood) MaterialTheme.colorScheme.primaryContainer
-                                    else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                modifier = Modifier.glassPanel(
+                                    shape = RoundedCornerShape(18.dp),
+                                    tint = if (selectedHomeMood == mood) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHighest
+                                    },
+                                    alpha = 0.56f,
+                                    elevation = 6.dp,
+                                ),
+                                color = when {
+                                    LocalImmersiveGlass.current -> Color.Transparent
+                                    selectedHomeMood == mood -> MaterialTheme.colorScheme.primaryContainer
+                                    else -> MaterialTheme.colorScheme.surfaceContainerHighest
+                                },
                             ) {
                                 Text(
                                     mood,
@@ -616,17 +677,17 @@ fun HomeScreen(
                     }
                 }
 
-                HomeSectionPreference.QUICK_PICKS -> if (sessionQuickPicks.isNotEmpty()) item(
+                HomeSectionPreference.QUICK_PICKS -> if (stableQuickPicks.isNotEmpty()) item(
                     key = "quick_picks_section",
                     contentType = "youtube_music_row"
                 ) {
                     YouTubeMusicHomeRow(
                         title = "Quick Picks",
-                        songs = sessionQuickPicks,
+                        songs = stableQuickPicks,
                         queueName = "Quick Picks",
                         playerViewModel = playerViewModel,
                             compactListStyle = true,
-                            onOpenSection = { openShelfDetail(navController, "Quick Picks", sessionQuickPicks) },
+                            onOpenSection = { openShelfDetail(navController, "Quick Picks", stableQuickPicks) },
                     )
                 }
 
@@ -636,6 +697,12 @@ fun HomeScreen(
                             songs = speedDialSongs,
                             randomPool = speedDialRandomPool,
                             playerViewModel = playerViewModel,
+                            onRefresh = {
+                                // Re-pick the visible eight from the listener's own pool and kick a
+                                // real refresh so a fresh pool can replace a stale one.
+                                speedDialGeneration++
+                                playerViewModel.forceUpdateDailyMix()
+                            },
                         )
                     }
                 }
@@ -644,10 +711,10 @@ fun HomeScreen(
                     item(key = "listen_again_section", contentType = "youtube_music_row") {
                         YouTubeMusicHomeRow(
                             title = "Listen Again",
-                            songs = listenAgainSongs,
+                            songs = stableListenAgainSongs,
                             queueName = "Listen Again",
                             playerViewModel = playerViewModel,
-                            onOpenSection = { openShelfDetail(navController, "Listen Again", listenAgainSongs) },
+                            onOpenSection = { openShelfDetail(navController, "Listen Again", stableListenAgainSongs) },
                         )
                     }
                 }
@@ -1083,12 +1150,23 @@ fun SongListItemFavs(
     onClick: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    val containerColor = if (isCurrentSong) colors.primaryContainer.copy(alpha = 0.46f) else colors.surfaceContainer
+    val glass = LocalImmersiveGlass.current
+    val containerColor = when {
+        isCurrentSong -> colors.primaryContainer.copy(alpha = if (glass) 0.38f else 0.46f)
+        glass -> Color.Transparent
+        else -> colors.surfaceContainer
+    }
     val contentColor = if (isCurrentSong) colors.primary else colors.onSurface
 
     Card(
         modifier = modifier
             .fillMaxWidth()
+            .glassPanel(
+                shape = RoundedCornerShape(cardCorners),
+                tint = if (isCurrentSong) colors.primaryContainer else colors.surfaceContainer,
+                alpha = if (isCurrentSong) 0.42f else 0.58f,
+                elevation = 8.dp,
+            )
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(cardCorners),
         colors = CardDefaults.cardColors(containerColor = containerColor),
@@ -1289,10 +1367,16 @@ private fun YouTubeMusicHomeRow(
                             ),
                         )
                         .width(if (compactListStyle) 330.dp else 164.dp)
+                        .glassPanel(
+                            shape = RoundedCornerShape(16.dp),
+                            tint = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            alpha = 0.56f,
+                            elevation = 12.dp,
+                        )
                         .clip(RoundedCornerShape(16.dp))
                         .combinedClickable(
                             onClick = {
-                                playerViewModel.playSongs(songs, song, queueName)
+                                playerViewModel.playBrowseSong(song, songs, queueName)
                             },
                             onDoubleClick = {
                                 playerViewModel.toggleFavoriteSpecificSong(song)
@@ -1303,7 +1387,8 @@ private fun YouTubeMusicHomeRow(
                         ),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest
+                        containerColor = if (LocalImmersiveGlass.current) Color.Transparent
+                        else MaterialTheme.colorScheme.surfaceContainerHighest
                     )
                 ) {
                     if (compactListStyle) Row(
@@ -1445,7 +1530,14 @@ private fun YouTubeMusicCollectionRow(
                                 stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
                             ),
                         )
-                        .width(164.dp).clickable {
+                        .width(164.dp)
+                        .glassPanel(
+                            shape = RoundedCornerShape(16.dp),
+                            tint = MaterialTheme.colorScheme.surfaceContainerHighest,
+                            alpha = 0.56f,
+                            elevation = 12.dp,
+                        )
+                        .clickable {
                         val route = if (collection.pageType == "MUSIC_PAGE_TYPE_ARTIST") {
                             Screen.ArtistDetail.createRoute(collection.browseId)
                         } else {
@@ -1455,7 +1547,8 @@ private fun YouTubeMusicCollectionRow(
                     },
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        containerColor = if (LocalImmersiveGlass.current) Color.Transparent
+                        else MaterialTheme.colorScheme.surfaceContainerHighest,
                     ),
                 ) {
                     AsyncImage(
@@ -1494,6 +1587,7 @@ private fun SpeedDialGrid(
     songs: List<Song>,
     randomPool: List<Song>,
     playerViewModel: PlayerViewModel,
+    onRefresh: () -> Unit = {},
 ) {
     val visibleSongs = songs.take(8)
     if (visibleSongs.isEmpty()) return
@@ -1512,6 +1606,13 @@ private fun SpeedDialGrid(
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Speed dial", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f).padding(vertical = 4.dp))
+            IconButton(onClick = onRefresh) {
+                Icon(
+                    Icons.Rounded.Refresh,
+                    contentDescription = "Refresh speed dial",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Spacer(Modifier.height(8.dp))
         BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
@@ -1529,7 +1630,7 @@ private fun SpeedDialGrid(
                                         .size(tileSize)
                                         .clip(RoundedCornerShape(14.dp))
                                         .combinedClickable(
-                                            onClick = { playerViewModel.playSongs(visibleSongs, song, "Speed dial") },
+                                            onClick = { playerViewModel.playBrowseSong(song, visibleSongs, "Speed dial") },
                                             onDoubleClick = { playerViewModel.toggleFavoriteSpecificSong(song) },
                                             onLongClick = { contextMenuSong = song },
                                         ),
@@ -1580,7 +1681,7 @@ private fun SpeedDialGrid(
                                             randomDialTurns += 1
                                             val pool = randomPool.ifEmpty { visibleSongs }
                                             pool.randomOrNull()?.let { randomSong ->
-                                                playerViewModel.playSongs(pool, randomSong, "Your random pick")
+                                                playerViewModel.playBrowseSong(randomSong, pool, "Your random pick")
                                             }
                                         },
                                     contentAlignment = Alignment.Center,

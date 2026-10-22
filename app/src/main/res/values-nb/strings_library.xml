@@ -514,7 +514,7 @@
     <string name="album_detail_id_not_found">Album-ID ikke funnet</string>
     <string name="album_detail_error_loading_album">Feil ved lasting av albumdata: %s</string>
     <string name="album_detail_not_found">Album ikke funnet</string>
-
+    <string name="song_album_navigation_unavailable">Ingen album eller spilleliste for denne sangen</string>
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">Ugyldig artist-ID</string>
     <string name="artist_detail_id_not_found">Artist-ID ikke funnet</string>

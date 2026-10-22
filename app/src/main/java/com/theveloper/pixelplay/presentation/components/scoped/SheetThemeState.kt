@@ -19,6 +19,7 @@ import androidx.compose.ui.util.lerp
 import com.theveloper.pixelplay.data.model.Song
 import com.theveloper.pixelplay.data.preferences.ThemePreference
 import com.theveloper.pixelplay.presentation.viewmodel.ColorSchemePair
+import com.theveloper.pixelplay.ui.theme.LocalImmersiveGlass
 
 /**
  * Theme state for the player sheet.
@@ -149,7 +150,14 @@ internal fun rememberSheetThemeState(
 
     val miniReadyAlpha = miniAppearProgress.value
     val miniAppearScale = lerp(0.985f, 1f, miniAppearProgress.value)
-    val playerAreaBackground = miniPlayerScheme.primaryContainer
+    val playerAreaBackground = if (LocalImmersiveGlass.current) {
+        // Frosted player card over the blurred cover instead of a flat block of the album colour.
+        // Nearly opaque on purpose: track rows scroll right underneath the floating card, and
+        // letting their text ghost through it looks like a glitch rather than like glass.
+        miniPlayerScheme.primaryContainer.copy(alpha = 0.96f)
+    } else {
+        miniPlayerScheme.primaryContainer
+    }
 
     // NOTE: miniAlpha and effectivePlayerAreaElevation are no longer computed here.
     // They were driven by the expansion fraction via the Transition API, which

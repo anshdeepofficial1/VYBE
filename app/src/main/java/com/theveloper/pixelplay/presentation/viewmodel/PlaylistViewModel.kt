@@ -16,6 +16,7 @@ import com.theveloper.pixelplay.data.preferences.PlaylistPreferencesRepository
 import com.theveloper.pixelplay.data.repository.MusicRepository
 import com.theveloper.pixelplay.data.repository.OnlineMusicRepository
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAccountManager
+import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAlbumDetails
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeSyncState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -204,6 +205,27 @@ class PlaylistViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Resolves a YouTube Music playlist that is not one of the user's saved playlists.
+     *
+     * Playlist browse pages share the header + track-list structure with album pages, so the album
+     * parser reads them correctly. Playlist ids arrive either already prefixed ("VL...") or as the
+     * bare playlist id, so both are tried.
+     */
+    private suspend fun resolveOnlinePlaylist(playlistId: String): YouTubeAlbumDetails? {
+        val candidates = buildList {
+            add(playlistId)
+            if (!playlistId.startsWith("VL")) add("VL$playlistId")
+        }.distinct()
+        for (candidate in candidates) {
+            val details = runCatching {
+                onlineMusicRepository.getAlbumDetails(candidate)
+            }.getOrNull()
+            if (details != null && details.tracks.isNotEmpty()) return details
+        }
+        return null
+    }
+
     fun loadPlaylistDetails(playlistId: String) {
         viewModelScope.launch {
             val shouldKeepExisting = _uiState.value.currentPlaylistDetails?.id == playlistId
@@ -292,16 +314,41 @@ class PlaylistViewModel @Inject constructor(
                         }
                         loadRecommendedNext(orderedSongs)
                     } else {
-                        Log.w("PlaylistVM", "Playlist with id $playlistId not found.")
-                        _uiState.update {
-                            it.copy(
-                                isLoading = false,
-                                playlistNotFound = true,
-                                currentPlaylistDetails = null,
-                                currentPlaylistSongs = emptyList()
+                        // Not one of the user's own playlists. It can still be a YouTube Music
+                        // playlist opened from Home, New Releases or Search; those used to land
+                        // on "playlist not found" with zero songs even though the row was
+                        // tappable. Resolve it online before giving up.
+                        val remote = resolveOnlinePlaylist(playlistId)
+                        if (remote != null) {
+                            val pseudo = Playlist(
+                                id = playlistId,
+                                name = remote.title.ifBlank { "Playlist" },
+                                songIds = remote.tracks.map { it.id },
                             )
-                        } // Mantener isLoading en false
-                        // Opcional: podrías establecer un error o un estado específico de "no encontrado"
+                            _uiState.update {
+                                it.copy(
+                                    currentPlaylistDetails = pseudo,
+                                    currentPlaylistSongs = remote.tracks,
+                                    playlistSongsOrderMode = PlaylistSongsOrderMode.Manual,
+                                    playlistOrderModes = it.playlistOrderModes + (
+                                        playlistId to PlaylistSongsOrderMode.Manual
+                                        ),
+                                    isLoading = false,
+                                    playlistNotFound = false
+                                )
+                            }
+                            loadRecommendedNext(remote.tracks)
+                        } else {
+                            Log.w("PlaylistVM", "Playlist with id $playlistId not found.")
+                            _uiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    playlistNotFound = true,
+                                    currentPlaylistDetails = null,
+                                    currentPlaylistSongs = emptyList()
+                                )
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {

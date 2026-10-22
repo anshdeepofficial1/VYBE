@@ -241,7 +241,7 @@ fun LibrarySongsTab(
                 songs[index]?.let { song ->
                     LibrarySongGridCard(song = song, onClick = {
                         if (isSelectionMode) onSongSelectionToggle(song)
-                        else playerViewModel.playSongs(queue, song, "Songs")
+                        else playerViewModel.playSongWithRadio(song, queue, "Songs")
                     })
                 }
             }
@@ -321,7 +321,7 @@ fun LibrarySongsTab(
                             LibrarySongGridCard(
                                 song = song,
                                 onClick = {
-                                    playerViewModel.playSongs(listeningHistorySongs, song, "Recently listened")
+                                    playerViewModel.playSongWithRadio(song, listeningHistorySongs, "Recently listened")
                                 },
                             )
                         }
@@ -339,7 +339,7 @@ fun LibrarySongsTab(
                                 isPlaying = false,
                                 isCurrentSong = currentSongId == song.id,
                                 onMoreOptionsClick = { onMoreOptionsClick(song) },
-                                onClick = { playerViewModel.playSongs(listeningHistorySongs, song, "Recently listened") },
+                                onClick = { playerViewModel.playSongWithRadio(song, listeningHistorySongs, "Recently listened") },
                             )
                         }
                     }

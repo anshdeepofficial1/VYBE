@@ -145,11 +145,11 @@ private enum class FeedbackType(val title: String, val issuePrefix: String) {
 }
 
 private val CoreMaintainer = Contributor(
-    id = "anshdeepofficial",
+    id = "anshdeepofficial1",
     displayName = "Anshdeep Singh",
     role = "Creator & Maintainer",
     detail = "Lead developer and maintainer of VYBE.",
-    avatarUrl = "https://avatars.githubusercontent.com/anshdeepofficial",
+    avatarUrl = "https://avatars.githubusercontent.com/anshdeepofficial1",
     iconRes = R.drawable.rounded_person_24,
     githubUrl = "https://github.com/anshdeepofficial1",
 )
@@ -414,7 +414,7 @@ fun AboutScreen(
                         "Sponsor development",
                         R.drawable.github,
                         "Open GitHub Sponsors in browser",
-                        { openUrl(context, "https://github.com/sponsors/anshdeepofficial") },
+                        { openUrl(context, "https://github.com/sponsors/anshdeepofficial1") },
                         Modifier.weight(1f),
                     )
                     SocialChip(
@@ -422,7 +422,7 @@ fun AboutScreen(
                         "Support with a coffee",
                         R.drawable.rounded_favorite_24,
                         "Open Buy Me a Coffee in browser",
-                        { openUrl(context, "https://buymeacoffee.com/anshdeepofficial") },
+                        { openUrl(context, "https://buymeacoffee.com/anshdeepofficial1") },
                         Modifier.weight(1f),
                     )
                 }
@@ -606,7 +606,7 @@ private fun AboutHeroCard(
 
                 SocialChip(
                     label = "GitHub",
-                    subtitle = "@anshdeepofficial",
+                    subtitle = "@anshdeepofficial1",
                     iconRes = R.drawable.github,
                     contentDescription = "Open GitHub Profile",
                     onClick = { openUrl(context, "https://github.com/anshdeepofficial1") },

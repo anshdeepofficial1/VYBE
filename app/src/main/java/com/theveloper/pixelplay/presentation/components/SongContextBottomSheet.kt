@@ -127,7 +127,11 @@ fun SongContextBottomSheet(
         SongContextAction(
             icon = ActionIcon.DrawableRes(R.drawable.rounded_album_24),
             label = if (onAlbum != null && song.album.isNotBlank() && !song.album.equals("YouTube Music", ignoreCase = true) && !song.album.equals("Online Track", ignoreCase = true)) "Album: ${song.album}" else "Go to Album",
-            enabled = onAlbum != null && song.album.isNotBlank() && !song.album.equals("YouTube Music", ignoreCase = true) && !song.album.equals("Online Track", ignoreCase = true),
+            // The player resolves the album even when the song only carries a placeholder
+            // name (it searches the online catalogue and, when nothing matches, shows the
+            // "album not found" notice), so the entry stays tappable whenever a target
+            // handler exists at all.
+            enabled = onAlbum != null,
             onClick = {
                 if (onAlbum != null) {
                     onAlbum()

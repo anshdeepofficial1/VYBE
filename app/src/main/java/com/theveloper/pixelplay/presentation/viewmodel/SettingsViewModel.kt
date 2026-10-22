@@ -13,6 +13,8 @@ import com.theveloper.pixelplay.data.backup.model.RestorePlan
 import com.theveloper.pixelplay.data.backup.model.RestoreResult
 import com.theveloper.pixelplay.data.backup.model.ValidationError
 import com.theveloper.pixelplay.data.preferences.AppThemeMode
+import com.theveloper.pixelplay.data.preferences.AppUiStyle
+import com.theveloper.pixelplay.data.preferences.ThemeGlassControls
 import com.theveloper.pixelplay.data.preferences.LogoMode
 import com.theveloper.pixelplay.data.preferences.CarouselStyle
 import com.theveloper.pixelplay.data.preferences.LibraryNavigationMode
@@ -22,6 +24,7 @@ import com.theveloper.pixelplay.data.database.AiUsageDao
 import com.theveloper.pixelplay.data.database.AiUsageEntity
 import com.theveloper.pixelplay.data.preferences.AiPreferencesRepository
 import com.theveloper.pixelplay.data.preferences.AlbumArtQuality
+import com.theveloper.pixelplay.data.preferences.AlbumArtShape
 import com.theveloper.pixelplay.data.preferences.AlbumArtColorAccuracy
 import com.theveloper.pixelplay.data.preferences.AlbumArtPaletteStyle
 import com.theveloper.pixelplay.data.preferences.AppLanguage
@@ -130,7 +133,8 @@ data class SettingsUiState(
     val replayGainEnabled: Boolean = false,
     val replayGainUseAlbumGain: Boolean = false,
     val isSafeTokenLimitEnabled: Boolean = true,
-    val showScrollbar: Boolean = false
+    val showScrollbar: Boolean = false,
+    val disableAudioOffload: Boolean = false
 )
 
 data class FailedSongInfo(
@@ -227,7 +231,8 @@ private sealed interface SettingsUiUpdate {
         val animatedLyricsBlurEnabled: Boolean,
         val animatedLyricsBlurStrength: Float,
         val disableBlurAllOver: Boolean,
-        val showScrollbar: Boolean
+        val showScrollbar: Boolean,
+        val disableAudioOffload: Boolean
     ) : SettingsUiUpdate
 }
 
@@ -263,6 +268,8 @@ class SettingsViewModel @Inject constructor(
 
     val dataSaverEnabled = userPreferencesRepository.dataSaverEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val musicVisualizerEnabled = userPreferencesRepository.musicVisualizerEnabledFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
     val onlineAudioQuality = userPreferencesRepository.onlineAudioQualityFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), OnlineAudioQuality.AUTO)
     val dynamicIslandEnabled = userPreferencesRepository.dynamicIslandEnabledFlow
@@ -284,6 +291,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setDataSaverEnabled(enabled: Boolean) = viewModelScope.launch {
         userPreferencesRepository.setDataSaverEnabled(enabled)
+    }
+
+    fun setMusicVisualizerEnabled(enabled: Boolean) = viewModelScope.launch {
+        userPreferencesRepository.setMusicVisualizerEnabled(enabled)
     }
 
     fun setOnlineAudioQuality(quality: OnlineAudioQuality) = viewModelScope.launch {
@@ -1128,7 +1139,8 @@ class SettingsViewModel @Inject constructor(
                 userPreferencesRepository.animatedLyricsBlurEnabledFlow,
                 userPreferencesRepository.animatedLyricsBlurStrengthFlow,
                 userPreferencesRepository.disableBlurAllOverFlow,
-                userPreferencesRepository.showScrollbarFlow
+                userPreferencesRepository.showScrollbarFlow,
+                userPreferencesRepository.disableAudioOffloadFlow
             ) { values ->
                 SettingsUiUpdate.Group2(
                     keepPlayingInBackground = values[0] as Boolean,
@@ -1151,7 +1163,8 @@ class SettingsViewModel @Inject constructor(
                     animatedLyricsBlurEnabled = values[17] as Boolean,
                     animatedLyricsBlurStrength = values[18] as Float,
                     disableBlurAllOver = values[19] as Boolean,
-                    showScrollbar = values[20] as Boolean
+                    showScrollbar = values[20] as Boolean,
+                    disableAudioOffload = values[21] as Boolean
                 )
             }.collect { update ->
                 _uiState.update { state ->
@@ -1176,7 +1189,8 @@ class SettingsViewModel @Inject constructor(
                         animatedLyricsBlurEnabled = update.animatedLyricsBlurEnabled,
                         animatedLyricsBlurStrength = update.animatedLyricsBlurStrength,
                         disableBlurAllOver = update.disableBlurAllOver,
-                        showScrollbar = update.showScrollbar
+                        showScrollbar = update.showScrollbar,
+                        disableAudioOffload = update.disableAudioOffload
                     )
                 }
             }
@@ -1437,6 +1451,45 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /** Exposed on its own instead of inside the big UI-state combine, which is already at its size limit. */
+    val appUiStyle: StateFlow<AppUiStyle> = userPreferencesRepository.appUiStyleFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AppUiStyle.MATERIAL)
+
+    fun setAppUiStyle(style: AppUiStyle) {
+        viewModelScope.launch {
+            userPreferencesRepository.setAppUiStyle(style)
+        }
+    }
+
+    /** The glass knobs shown under the Theme selector; kept out of the big UI-state combine. */
+    val themeGlassControls: StateFlow<ThemeGlassControls> =
+        userPreferencesRepository.themeGlassControlsFlow
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThemeGlassControls())
+
+    fun setThemeBackdropArtwork(enabled: Boolean) = viewModelScope.launch {
+        userPreferencesRepository.setThemeBackdropArtwork(enabled)
+    }
+
+    fun setThemeBlurStrength(value: Int) = viewModelScope.launch {
+        userPreferencesRepository.setThemeBlurStrength(value)
+    }
+
+    fun setThemePanelAlpha(value: Int) = viewModelScope.launch {
+        userPreferencesRepository.setThemePanelAlpha(value)
+    }
+
+    fun setThemeSheen(enabled: Boolean) = viewModelScope.launch {
+        userPreferencesRepository.setThemeSheen(enabled)
+    }
+
+    fun setThemeEdgeLight(enabled: Boolean) = viewModelScope.launch {
+        userPreferencesRepository.setThemeEdgeLight(enabled)
+    }
+
+    fun setThemeShadow(enabled: Boolean) = viewModelScope.launch {
+        userPreferencesRepository.setThemeShadow(enabled)
+    }
+
     fun setShowPlayerFileInfo(show: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setShowPlayerFileInfo(show)
@@ -1488,6 +1541,12 @@ class SettingsViewModel @Inject constructor(
     fun setSkipSilenceEnabled(enabled: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setSkipSilenceEnabled(enabled)
+        }
+    }
+
+    fun setDisableAudioOffload(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setDisableAudioOffload(enabled)
         }
     }
 
@@ -1853,6 +1912,15 @@ class SettingsViewModel @Inject constructor(
     fun setAlbumArtQuality(quality: AlbumArtQuality) {
         viewModelScope.launch {
             userPreferencesRepository.setAlbumArtQuality(quality)
+        }
+    }
+
+    val albumArtShape: StateFlow<AlbumArtShape> = userPreferencesRepository.albumArtShapeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AlbumArtShape.ROUNDED)
+
+    fun setAlbumArtShape(shape: AlbumArtShape) {
+        viewModelScope.launch {
+            userPreferencesRepository.setAlbumArtShape(shape)
         }
     }
 

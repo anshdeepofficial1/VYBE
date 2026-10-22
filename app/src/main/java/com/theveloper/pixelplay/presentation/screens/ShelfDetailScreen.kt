@@ -108,7 +108,7 @@ fun ShelfDetailScreen(
                         isCurrentSong = false,
                         showMoreOptionsButton = false,
                         onMoreOptionsClick = {},
-                        onClick = { playerViewModel.playSongs(snapshot.songs, song, snapshot.title) },
+                        onClick = { playerViewModel.playBrowseSong(song, snapshot.songs, snapshot.title) },
                         onLongPress = {},
                     )
                 }

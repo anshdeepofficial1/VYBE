@@ -340,7 +340,12 @@ class QueueStateHolder @Inject constructor(
      * been served in 42ms. Playback therefore starts with just the seed and the rest of the
      * queue is spliced in by [PlaybackSourceCallbacks.extendQueue] while it plays.
      */
-    fun playOnlineSeed(seed: Song, sourceName: String, callbacks: PlaybackSourceCallbacks) {
+    fun playOnlineSeed(
+        seed: Song,
+        sourceName: String,
+        callbacks: PlaybackSourceCallbacks,
+        fallbackQueue: List<Song> = emptyList(),
+    ) {
         callbacks.scope.launch {
             // A seed already in the last-10 cache plays straight from disk, so there is nothing
             // to warm up - resolving it would only burn a network round trip before the tap
@@ -379,12 +384,18 @@ class QueueStateHolder @Inject constructor(
                     .take(20)
                 (listOf(seed) + related).distinctBy { it.id }
             }
+            // A browse surface can hand in the shelf it was tapped from. It is only used when the
+            // provider has no radio for this seed, so the queue is never just the seed alone.
+            val resolvedQueue = queue.takeIf { it.size > 1 }
+                ?: fallbackQueue.filter { it.id != seed.id }
+                    .ifEmpty { queue }
+                    .let { (listOf(seed) + it).distinctBy(Song::id) }
             // Warm the next couple of tracks so auto-advance does not stall when the link is
             // poor. Never awaited, so a slow network cannot delay anything.
             callbacks.scope.launch(Dispatchers.IO) {
-                runCatching { onlineMusicRepository.prefetchStreamUrls(queue.drop(1), limit = 2) }
+                runCatching { onlineMusicRepository.prefetchStreamUrls(resolvedQueue.drop(1), limit = 2) }
             }
-            callbacks.extendQueue(queue, seed.id)
+            callbacks.extendQueue(resolvedQueue, seed.id)
         }
     }
 }

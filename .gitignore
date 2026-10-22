@@ -59,6 +59,10 @@ patch.py
 rewrite.py
 write.py
 
+# Local developer workspace: build logs, one-off patch scripts, UI dumps, screenshots
+/dev/
+/tools/dev-archive/
+
 # Node/tooling dependencies and local env files
 **/node_modules/
 **/dist/

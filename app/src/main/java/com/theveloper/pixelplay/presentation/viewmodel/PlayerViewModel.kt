@@ -56,6 +56,8 @@ import com.theveloper.pixelplay.data.model.SortOption
 import com.theveloper.pixelplay.data.model.toLibraryTabIdOrNull
 import com.theveloper.pixelplay.data.provider.SharedArtworkContentProvider
 import com.theveloper.pixelplay.data.preferences.CarouselStyle
+import com.theveloper.pixelplay.data.preferences.AppUiStyle
+import com.theveloper.pixelplay.data.preferences.ThemeGlassControls
 import com.theveloper.pixelplay.data.preferences.LibraryNavigationMode
 import com.theveloper.pixelplay.data.preferences.NavBarStyle
 import com.theveloper.pixelplay.data.preferences.FullPlayerLoadingTweaks
@@ -64,6 +66,7 @@ import com.theveloper.pixelplay.data.preferences.AlbumArtPaletteStyle
 import com.theveloper.pixelplay.data.preferences.ThemePreferencesRepository
 import com.theveloper.pixelplay.data.preferences.UserPreferencesRepository
 import com.theveloper.pixelplay.data.preferences.AlbumArtQuality
+import com.theveloper.pixelplay.data.preferences.AlbumArtShape
 import com.theveloper.pixelplay.data.preferences.ThemePreference
 import com.theveloper.pixelplay.data.repository.LyricsSearchResult
 import com.theveloper.pixelplay.data.repository.MusicRepository
@@ -239,6 +242,7 @@ class PlayerViewModel @Inject constructor(
     private val mediaControllerFactory: com.theveloper.pixelplay.data.media.MediaControllerFactory,
     private val socialReelAudioRecognizer: com.theveloper.pixelplay.data.recognition.SocialReelAudioRecognizer,
     private val playbackRecentCacheManager: com.theveloper.pixelplay.data.cache.PlaybackRecentCacheManager,
+    private val spectrumBus: com.theveloper.pixelplay.data.service.player.SpectrumBus,
 ) : ViewModel() {
 
     private val _isVideoMode = MutableStateFlow(false)
@@ -768,11 +772,32 @@ class PlayerViewModel @Inject constructor(
     val albumArtQuality: StateFlow<AlbumArtQuality> = userPreferencesRepository.albumArtQualityFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AlbumArtQuality.MEDIUM)
 
+    val albumArtShape: StateFlow<AlbumArtShape> = userPreferencesRepository.albumArtShapeFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AlbumArtShape.ROUNDED)
+
     val immersiveArtworkEnabled: StateFlow<Boolean> = userPreferencesRepository.immersiveArtworkEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val fullAppImmersiveEnabled: StateFlow<Boolean> = userPreferencesRepository.fullAppImmersiveEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val appUiStyle: StateFlow<AppUiStyle> = userPreferencesRepository.appUiStyleFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUiStyle.MATERIAL)
+
+    /** Blur strength, panel opacity and the glass accents the Theme settings expose. */
+    val themeGlassControls: StateFlow<ThemeGlassControls> =
+        userPreferencesRepository.themeGlassControlsFlow
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ThemeGlassControls())
+
+    /**
+     * Live band levels from the analyser sitting in the audio processor chain. Read straight off
+     * the draw phase by the player's bars, so a playing song never recomposes the player.
+     */
+    val spectrum: StateFlow<FloatArray> = spectrumBus.spectrum
+
+    val musicVisualizerEnabled: StateFlow<Boolean> =
+        userPreferencesRepository.musicVisualizerEnabledFlow
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     val animatedArtworkEnabled: StateFlow<Boolean> = userPreferencesRepository.animatedArtworkEnabledFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -1466,18 +1491,60 @@ class PlayerViewModel @Inject constructor(
     fun updateSearchQuery(query: String) {
         searchQuery = query
         suggestionJob?.cancel()
-        if (query.isBlank()) {
+        val trimmed = query.trim()
+        if (trimmed.isBlank()) {
             _querySuggestions.value = emptyList()
             return
         }
+        // Local predictions resolve on the same frame as the keystroke. Waiting for the network
+        // meant the dropdown only filled after the full search had returned, so by the third or
+        // fourth character the listener had already typed past the moment suggestions are useful.
+        val local = buildLocalSearchSuggestions(trimmed)
+        if (local.isNotEmpty()) _querySuggestions.value = local
         suggestionJob = viewModelScope.launch {
-            delay(300) // Debounce
-            val region = "IN" // fallback
-            val suggestions = runCatching { onlineMusicRepository.getSearchSuggestions(query, region) }.getOrNull() ?: emptyList()
+            delay(160)
+            val region = runCatching { userPreferencesRepository.userRegionFlow.first() }
+                .getOrNull().orEmpty().ifBlank { "IN" }
+            val remote = runCatching { onlineMusicRepository.getSearchSuggestions(trimmed, region) }
+                .getOrNull().orEmpty()
             if (searchQuery == query) {
-                _querySuggestions.value = suggestions
+                _querySuggestions.value = (local + remote)
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() && it.length <= 64 }
+                    .distinctBy { it.lowercase() }
+                    .take(8)
             }
         }
+    }
+
+    /**
+     * Offline half of the suggestion list: what this listener searched before, plus artists they
+     * already have. Deliberately prefix-based - a suggestion that does not extend what was typed
+     * reads as an unrelated recommendation rather than as a completion.
+     */
+    private fun buildLocalSearchSuggestions(query: String): List<String> {
+        val needle = query.lowercase()
+        val matchesPrefix = { value: String ->
+            value.length > query.length && value.lowercase().startsWith(needle)
+        }
+        val fromHistory = runCatching {
+            searchStateHolder.searchHistory.value
+                .asSequence()
+                .map { it.query }
+                .filter(matchesPrefix)
+                .take(4)
+                .toList()
+        }.getOrDefault(emptyList())
+        val fromArtists = runCatching {
+            artistsFlow.value.asSequence()
+                .map { it.name }
+                .filter(matchesPrefix)
+                .take(3)
+                .toList()
+        }.getOrDefault(emptyList())
+        return (fromHistory + fromArtists)
+            .distinctBy { it.lowercase() }
+            .take(6)
     }
 
 
@@ -1711,6 +1778,7 @@ class PlayerViewModel @Inject constructor(
     val yourMixSongs: StateFlow<ImmutableList<Song>> = dailyMixStateHolder.yourMixSongs
     val latestReleaseSongs: StateFlow<ImmutableList<Song>> = dailyMixStateHolder.latestReleaseSongs
     val quickPickSongs: StateFlow<ImmutableList<Song>> = dailyMixStateHolder.quickPickSongs
+    val speedDialSongs: StateFlow<ImmutableList<Song>> = dailyMixStateHolder.speedDialSongs
     val trendingSongs: StateFlow<ImmutableList<Song>> = dailyMixStateHolder.trendingSongs
     val discoverySongs: StateFlow<ImmutableList<Song>> = dailyMixStateHolder.discoverySongs
     val youtubeHomeShelves = dailyMixStateHolder.youtubeHomeShelves
@@ -1794,6 +1862,11 @@ class PlayerViewModel @Inject constructor(
         dailyMixStateHolder.forceUpdate(
             favoriteSongIdsFlow = favoriteSongIds
         )
+    }
+
+    /** Refreshes the connected YouTube Music library when a sync is due. */
+    fun syncYouTubeLibraryIfDue(force: Boolean = false) {
+        dailyMixStateHolder.syncYouTubeLibraryIfDue(force)
     }
 
     private var castSongUiSyncJob: Job? = null
@@ -2397,6 +2470,110 @@ class PlayerViewModel @Inject constructor(
         queueStateHolder.playOnlineSeed(song, sourceName, playbackSourceCallbacks())
     }
 
+    /**
+     * Starts a song tapped on a browse surface (Home shelf, Explore grid, search result, mood list)
+     * and follows it with that song's own radio instead of paging through the row.
+     *
+     * The shelf is passed as a fallback so a provider that has no radio for the seed still leaves a
+     * usable queue behind the song rather than a dead end.
+     */
+    fun playBrowseSong(
+        song: Song,
+        shelf: List<Song> = emptyList(),
+        sourceName: String = "VYBE Radio",
+    ) {
+        // Device files have no online radio. Build the same kind of queue from the listener's own
+        // pool instead of dropping them into list order.
+        val isLocalFile = song.id.toLongOrNull() != null ||
+            song.contentUriString.startsWith("content://") ||
+            song.contentUriString.startsWith("file://")
+        if (isLocalFile) {
+            playSongs(buildLocalRadioQueue(song, shelf), song, sourceName)
+            return
+        }
+        if (stablePlayerState.value.repeatMode == androidx.media3.common.Player.REPEAT_MODE_ONE) {
+            playbackStateHolder.setRepeatMode(androidx.media3.common.Player.REPEAT_MODE_OFF)
+        }
+        queueStateHolder.playOnlineSeed(
+            seed = song,
+            sourceName = sourceName,
+            callbacks = playbackSourceCallbacks(),
+            fallbackQueue = shelf,
+        )
+    }
+
+    /**
+     * Plays [song] and follows it with songs the listener is likely to want next.
+     *
+     * A tap used to hand the whole visible list straight to the queue, so whatever happened to sit
+     * under the finger played next: the next row of an alphabetical library, the next search hit,
+     * the next chart entry. That is not a recommendation, it is just the list. This builds the
+     * queue around the song itself instead - same artists first, then the same genre, then the rest
+     * of the pool - which is what a listener expects after tapping a track they picked.
+     */
+    fun playSongWithRadio(
+        song: Song,
+        pool: List<Song>,
+        sourceName: String = "VYBE Radio",
+    ) {
+        val isLocalFile = song.id.toLongOrNull() != null ||
+            song.contentUriString.startsWith("content://") ||
+            song.contentUriString.startsWith("file://")
+        if (!isLocalFile) {
+            playBrowseSong(song, pool, sourceName)
+            return
+        }
+        playSongs(buildLocalRadioQueue(song, pool), song, sourceName)
+    }
+
+    /**
+     * Seed first, then the closest matches in [pool]: the seed's artists, then its genre, then
+     * everything else. Each artist is capped so a single album cannot fill the queue, and the
+     * remainder still follows so "next" never dead-ends on a small library.
+     */
+    private fun buildLocalRadioQueue(seed: Song, pool: List<Song>): List<Song> {
+        val queueLimit = 30
+        val seedArtists = seed.artistKeysForRadio()
+        val seedGenre = seed.genre?.trim()?.lowercase()?.takeIf(String::isNotBlank)
+        val others = pool.asSequence()
+            .filter { it.id != seed.id }
+            .distinctBy { it.id }
+            .toList()
+        if (others.isEmpty()) return listOf(seed)
+
+        val scored = others.map { candidate ->
+            val artists = candidate.artistKeysForRadio()
+            var score = 0
+            if (artists.intersect(seedArtists).isNotEmpty()) score += 100
+            if (seedGenre != null && candidate.genre?.trim()?.lowercase() == seedGenre) score += 40
+            if (seed.album.isNotBlank() && candidate.album.equals(seed.album, true)) score += 15
+            candidate to score
+        }.sortedByDescending { it.second }
+
+        val artistCounts = mutableMapOf<String, Int>()
+        val related = ArrayList<Song>(queueLimit)
+        for ((candidate, _) in scored) {
+            if (related.size >= queueLimit) break
+            val key = candidate.artistKeysForRadio().firstOrNull().orEmpty()
+            val cap = if (key in seedArtists) 4 else 2
+            if ((artistCounts[key] ?: 0) >= cap) continue
+            artistCounts[key] = (artistCounts[key] ?: 0) + 1
+            related += candidate
+        }
+
+        val relatedIds = related.mapTo(hashSetOf(), Song::id)
+        val remainder = others.filterNot { it.id in relatedIds }
+        // A queue the size of the whole library would be wasteful to build and to render; the close
+        // matches plus a generous tail is plenty for continuous playback from any seed.
+        return (listOf(seed) + related + remainder).distinctBy(Song::id).take(200)
+    }
+
+    private fun Song.artistKeysForRadio(): Set<String> =
+        artists.map { it.name.trim().lowercase() }
+            .filter(String::isNotBlank)
+            .ifEmpty { listOf(displayArtist.trim().lowercase()) }
+            .toSet()
+
     fun playSharedVybeLink(uri: Uri) {
         val shared = VybeSongShareLink.parse(uri) ?: return
         viewModelScope.launch {
@@ -2630,7 +2807,10 @@ class PlayerViewModel @Inject constructor(
             triggerAlbumNavigationFromPlayer(song.albumId)
             return
         }
-        if (!song.id.startsWith("yt_") && song.album.isBlank()) return
+        if (!song.id.startsWith("yt_") && song.album.isBlank()) {
+            Toast.makeText(context, context.getString(R.string.song_album_navigation_unavailable), Toast.LENGTH_SHORT).show()
+            return
+        }
 
         albumNavigationJob?.cancel()
         albumNavigationJob = viewModelScope.launch {
@@ -2641,16 +2821,25 @@ class PlayerViewModel @Inject constructor(
             val albums = runCatching {
                 onlineMusicRepository.searchYouTubeMusicStructured(query).albums
             }.getOrDefault(emptyList())
-            val match = albumName?.let { wanted ->
+            val match = if (albumName != null) {
                 albums.firstOrNull {
-                    it.title.equals(wanted, ignoreCase = true) ||
-                        it.title.contains(wanted, ignoreCase = true) ||
-                        wanted.contains(it.title, ignoreCase = true)
+                    it.title.equals(albumName, ignoreCase = true) ||
+                        it.title.contains(albumName, ignoreCase = true) ||
+                        albumName.contains(it.title, ignoreCase = true)
                 }
-            } ?: albums.firstOrNull()
+            } else {
+                // The song carries no album credit, so nothing pins it to a collection.
+                // Only a single named exactly like the song (the usual release pattern) is
+                // accepted; grabbing the first search hit would open an unrelated album.
+                albums.firstOrNull { it.title.equals(song.title, ignoreCase = true) }
+            }
             if (match != null) {
                 collapsePlayerSheet()
                 _remoteAlbumNavigationRequests.emit(match.browseId)
+            } else {
+                // The song has no findable playlist/album - show the small notice the
+                // user asked for instead of navigating somewhere wrong.
+                Toast.makeText(context, context.getString(R.string.song_album_navigation_unavailable), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -2673,7 +2862,11 @@ class PlayerViewModel @Inject constructor(
         artistNavigationJob = viewModelScope.launch {
             val match = runCatching {
                 val matches = onlineMusicRepository.searchYouTubeMusicStructured(artist.name).artists
-                matches.firstOrNull { it.name.equals(artist.name, ignoreCase = true) }
+                // The catalogue hosts different artists under near-identical names, so the
+                // capitalisation the song carries is the best disambiguator before relaxing
+                // to case-insensitive, then to whatever the provider named first.
+                matches.firstOrNull { it.name == artist.name }
+                    ?: matches.firstOrNull { it.name.equals(artist.name, ignoreCase = true) }
                     ?: matches.firstOrNull()
             }.getOrNull() ?: return@launch
             collapsePlayerSheet()

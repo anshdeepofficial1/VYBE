@@ -30,8 +30,14 @@ import androidx.annotation.CallSuper
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -80,6 +86,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
@@ -150,6 +157,9 @@ import com.theveloper.pixelplay.presentation.screens.SetupScreen
 import com.theveloper.pixelplay.presentation.viewmodel.MainViewModel
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixelplay.ui.theme.PixelPlayTheme
+import com.theveloper.pixelplay.ui.theme.LocalImmersiveGlass
+import com.theveloper.pixelplay.ui.theme.GlassControls
+import com.theveloper.pixelplay.data.preferences.AppUiStyle
 import com.theveloper.pixelplay.ui.theme.LocalShowScrollbar
 import com.theveloper.pixelplay.ui.theme.LocalVybeLogoMode
 import com.theveloper.pixelplay.utils.CrashHandler
@@ -340,10 +350,57 @@ class MainActivity : ComponentActivity() {
             // Full-app immersive artwork. Rendered once at the root, behind every screen, so the
             // navigation bar, player sheet and all destinations share one continuous blurred
             // backdrop instead of each screen painting its own copy.
-            val fullAppImmersiveEnabled by playerViewModel.fullAppImmersiveEnabled.collectAsStateWithLifecycle()
+            val appUiStyle by playerViewModel.appUiStyle.collectAsStateWithLifecycle()
+            val themeGlass by playerViewModel.themeGlassControls.collectAsStateWithLifecycle()
             val appPlayerState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
             val immersiveArtUri = appPlayerState.currentSong?.albumArtUriString
-            val showImmersiveArtwork = fullAppImmersiveEnabled && immersiveArtUri != null
+            // Animatable is not a Flow: subscribe through derivedStateOf, which also keeps the
+            // expensive root scope out of the loop and only invalidates when the value moves.
+            val playerExpansion by remember {
+                derivedStateOf { playerViewModel.playerContentExpansionFraction.value }
+            }
+
+            // Immersive Artwork and Liquid Glass carry the cover permanently. Gesture Blur keeps
+            // the app clean until the player sheet starts moving, then lets the same cover slide in
+            // behind everything, so the blur reads as a consequence of the gesture.
+            val backdropTarget = when {
+                !appUiStyle.usesGlassBackdrop -> 0f
+                !themeGlass.backdropArtwork -> 0f
+                immersiveArtUri == null -> 0f
+                appUiStyle == AppUiStyle.GESTURE -> playerExpansion.coerceIn(0f, 1f)
+                else -> 1f
+            }
+            val backdropProgress by animateFloatAsState(
+                targetValue = backdropTarget,
+                // Snap for the permanent themes: a fade here would flicker the whole app from
+                // Material to glass on the first frame. Gesture Blur gets the real easing because
+                // the fade *is* the effect.
+                animationSpec = if (appUiStyle == AppUiStyle.GESTURE) {
+                    tween(320, easing = LinearOutSlowInEasing)
+                } else {
+                    snap()
+                },
+                label = "BackdropProgress"
+            )
+            val showImmersiveArtwork = backdropProgress > 0.004f
+
+            // 60 (the shipped default) lands on the 55dp blur and the 0.48/0.42 scrim this look was
+            // tuned at; the ends still read as "barely softened" and "melted".
+            val blurStrength = themeGlass.blurStrength.coerceIn(0, 100) / 100f
+            val backdropBlur = (10f + blurStrength * 75f).dp
+            val backdropScrim = if (useDarkTheme) {
+                0.30f + 0.30f * blurStrength
+            } else {
+                0.26f + 0.28f * blurStrength
+            }
+
+            val glassControls = GlassControls(
+                panelAlpha = themeGlass.panelAlpha.coerceIn(10, 100) / 100f,
+                sheen = themeGlass.sheen,
+                edgeLight = themeGlass.edgeLight,
+                shadow = themeGlass.shadow,
+                liquid = appUiStyle == AppUiStyle.LIQUID,
+            )
 
             CompositionLocalProvider(
                 LocalShowScrollbar provides showScrollbar,
@@ -354,7 +411,8 @@ class MainActivity : ComponentActivity() {
                     darkTheme = useDarkTheme,
                     amoledTheme = appThemeMode == AppThemeMode.AMOLED,
                     colorSchemePairOverride = albumColorSchemePair,
-                    immersiveArtwork = showImmersiveArtwork
+                    immersiveArtwork = showImmersiveArtwork,
+                    glassControls = glassControls
                 ) {
                     var contentVisible by remember { mutableStateOf(false) }
                     val contentAlpha by animateFloatAsState(
@@ -370,29 +428,68 @@ class MainActivity : ComponentActivity() {
                     }
 
                     Surface(
-                        modifier = Modifier.fillMaxSize().graphicsLayer { alpha = contentAlpha }, 
-                        color = if (showImmersiveArtwork) Color.Transparent else MaterialTheme.colorScheme.background
+                        modifier = Modifier.fillMaxSize().graphicsLayer { alpha = contentAlpha },
+                        color = if (showImmersiveArtwork) {
+                            // Cross-fade instead of a hard switch: Gesture Blur starts as the
+                            // opaque Material background and thins out as the player rises.
+                            MaterialTheme.colorScheme.background.copy(
+                                alpha = (1f - backdropProgress).coerceIn(0f, 1f)
+                            )
+                        } else {
+                            MaterialTheme.colorScheme.background
+                        }
                     ) {
                         if (showImmersiveArtwork) {
-                            // Blurred cover as the app-wide backdrop. Kept below the content and
-                            // above nothing else, so every translucent surface in the theme reads
-                            // as tinted glass over the artwork.
+                            // Blurred cover as the app-wide backdrop. Exactly one scrim sits on
+                            // top of it: stacking a scrim + a gradient + a translucent screen
+                            // background multiplied down to a few percent of artwork, which is
+                            // why the feature previously looked like it was not working at all.
                             AsyncImage(
                                 model = immersiveArtUri,
                                 contentDescription = null,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .blur(56.dp)
-                                    .graphicsLayer { alpha = 0.92f }
+                                    .blur(backdropBlur)
+                                    .graphicsLayer { alpha = backdropProgress }
                             )
-                            // Scrim tuned so white body text keeps contrast on bright covers
-                            // while the artwork colour is still clearly visible.
                             Box(
                                 Modifier
                                     .fillMaxSize()
-                                    .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.34f))
+                                    .graphicsLayer { alpha = backdropProgress }
+                                    .background(
+                                        MaterialTheme.colorScheme.background.copy(
+                                            alpha = backdropScrim
+                                        )
+                                    )
                             )
+                            // Gentle depth only at the two edges the system bars and the floating
+                            // navigation pill sit on, so their labels keep contrast without
+                            // flattening the middle of the cover.
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer { alpha = backdropProgress }
+                                    .background(
+                                        Brush.verticalGradient(
+                                            0.0f to MaterialTheme.colorScheme.background.copy(
+                                                alpha = (if (useDarkTheme) 0.34f else 0.40f) *
+                                                    backdropProgress
+                                            ),
+                                            0.22f to Color.Transparent,
+                                            0.80f to Color.Transparent,
+                                            1.0f to MaterialTheme.colorScheme.background.copy(
+                                                alpha = (if (useDarkTheme) 0.40f else 0.46f) *
+                                                    backdropProgress
+                                            ),
+                                        )
+                                    )
+                            )
+                            if (appUiStyle == AppUiStyle.LIQUID) {
+                                // Isolated: its own scope invalidates at 60fps, so the app root
+                                // above it never recomposes just because the highlight moved.
+                                LiquidGlassSweep(progress = backdropProgress)
+                            }
                         }
                         if (showSetupScreen == null) {
                             SetupGateLoadingScreen()
@@ -1041,7 +1138,13 @@ class MainActivity : ComponentActivity() {
                                         clip = true
                                         shadowElevation = navBarElevationPx
                                     },
-                                color = NavigationBarDefaults.containerColor
+                                color = NavigationBarDefaults.containerColor.copy(
+                                    // Frosted rather than paper-solid while the artwork backdrop is
+                                    // behind it. Floating chrome stays nearly opaque: content scrolls
+                                    // directly underneath it, and text bleeding through a bar reads as
+                                    // a rendering bug rather than as glass.
+                                    alpha = if (LocalImmersiveGlass.current) 0.96f else 1f,
+                                )
                             ) {
                                 PlayerInternalNavigationBar(
                                     navController = navController,
@@ -1482,6 +1585,38 @@ private class DynamicSmoothCornerShape(
             cachedOutline = it
         }
     }
+}
+
+/**
+ * The one moving layer behind Liquid Glass: a highlight that travels across the blurred cover on a
+ * slow loop, so the theme reads as flowing liquid instead of a still photograph of glass.
+ *
+ * Kept in its own composable on purpose: the state read here recomposes at animation rate, and
+ * doing that inside the root Surface content would re-run the whole app tree sixty times a second.
+ */
+@Composable
+private fun LiquidGlassSweep(progress: Float) {
+    val sweep by rememberInfiniteTransition(label = "LiquidSweep").animateFloat(
+        initialValue = -0.35f,
+        targetValue = 1.35f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(11_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "LiquidSweepOffset",
+    )
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = progress }
+            .background(
+                Brush.linearGradient(
+                    (sweep - 0.30f).coerceIn(0f, 1f) to Color.Transparent,
+                    sweep.coerceIn(0f, 1f) to Color.White.copy(alpha = 0.06f),
+                    (sweep + 0.30f).coerceIn(0f, 1f) to Color.Transparent,
+                )
+            )
+    )
 }
 
 

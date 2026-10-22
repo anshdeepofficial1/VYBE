@@ -673,4 +673,28 @@
     <string name="settings_volume_section">Volume</string>
     <string name="settings_pause_on_volume_zero">Pause when volume reaches zero</string>
     <string name="settings_pause_on_volume_zero_desc">Automatically pause playback when the volume is set to 0</string>
+
+    <!-- Now Playing: live spectrum visualizer -->
+    <string name="settings_music_visualizer_title">Music visualizer</string>
+    <string name="settings_music_visualizer_subtitle">Live spectrum bars above the seek bar, driven by the song itself</string>
+
+    <!-- Now Playing: album art shape -->
+    <string name="settings_album_art_shape_title">Album art shape</string>
+    <string name="settings_album_art_shape_subtitle">Rounded corners, a sharp square, or a vinyl disc that spins while playing</string>
+
+    <!-- Now Playing: notification controls -->
+    <string name="settings_notification_controls_section">Notification player controls</string>
+    <string name="settings_notification_action_one_title">First custom action</string>
+    <string name="settings_notification_action_one_subtitle">The first configurable button in the system media notification</string>
+    <string name="settings_notification_action_two_title">Second custom action</string>
+    <string name="settings_notification_action_two_subtitle">The second configurable button in the system media notification</string>
+    <string name="settings_notification_action_repeat">Loop / Repeat</string>
+    <string name="settings_notification_action_shuffle">Shuffle</string>
+    <string name="settings_notification_action_like">Like</string>
+    <string name="settings_notification_action_close">Close player</string>
+
+    <!-- Behaviour: search -->
+    <string name="settings_behavior_search_section">Search</string>
+    <string name="settings_save_search_history_title">Save search history</string>
+    <string name="settings_save_search_history_subtitle">Keep recent searches for quicker access. Turning this off clears saved searches.</string>
 </resources>

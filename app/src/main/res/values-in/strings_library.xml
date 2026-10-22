@@ -514,7 +514,7 @@
     <string name="album_detail_id_not_found">ID album tidak ditemukan</string>
     <string name="album_detail_error_loading_album">Kesalahan memuat data album: %s</string>
     <string name="album_detail_not_found">Album tidak ditemukan</string>
-
+    <string name="song_album_navigation_unavailable">Tidak ada album atau playlist untuk lagu ini</string>
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">ID artis tidak valid</string>
     <string name="artist_detail_id_not_found">ID artis tidak ditemukan</string>

@@ -514,7 +514,7 @@
     <string name="album_detail_id_not_found">未找到专辑 ID</string>
     <string name="album_detail_error_loading_album">加载专辑数据出错：%s</string>
     <string name="album_detail_not_found">未找到专辑</string>
-
+    <string name="song_album_navigation_unavailable">这首歌没有专辑或播放列表</string>
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">无效的艺术家 ID</string>
     <string name="artist_detail_id_not_found">未找到艺术家 ID</string>

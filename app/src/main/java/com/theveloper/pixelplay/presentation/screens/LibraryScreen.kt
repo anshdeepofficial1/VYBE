@@ -174,6 +174,7 @@ import com.theveloper.pixelplay.data.worker.SyncProgress
 import com.theveloper.pixelplay.presentation.screens.search.components.GenreTypography
 import com.theveloper.pixelplay.presentation.components.SyncProgressBar
 import com.theveloper.pixelplay.presentation.viewmodel.LibraryViewModel
+import com.theveloper.pixelplay.presentation.viewmodel.distinctByTrack
 import com.theveloper.pixelplay.utils.formatSongCount
 import androidx.paging.compose.collectAsLazyPagingItems
 import android.content.Intent
@@ -451,10 +452,12 @@ fun LibraryScreen(
     val favoriteIds by playerViewModel.favoriteSongIds.collectAsStateWithLifecycle() // Reintroducir favoriteIds aquí
     val playbackHistory by playerViewModel.playbackHistory.collectAsStateWithLifecycle()
     val listeningHistorySongs = remember(playbackHistory, libraryViewModel) {
-        libraryViewModel.rankRecommendations(
-            playbackHistory.mapNotNull { entry -> entry.track?.toSong(entry.songId) }
-                .distinctBy { it.id }
-        )
+        // Library → Songs is the listening history, most recently played first. History is
+        // already timestamp-sorted, so the raw order must be preserved: recommendation ranking
+        // here is what previously made the tab look unordered and often empty.
+        playbackHistory
+            .mapNotNull { entry -> entry.track?.toSong(entry.songId) }
+            .distinctByTrack()
     }
     val listeningHistoryAlbums = remember(listeningHistorySongs) {
         listeningHistorySongs
@@ -1183,6 +1186,18 @@ fun LibraryScreen(
                                 .forEach { playlist ->
                                     playlistMultiSelectionState.removeFromSelection(playlist.id)
                                 }
+                        }
+
+                        // Opening the Playlists tab asks YouTube Music for the account's library
+                        // instead of waiting for the next scheduled background sync. The user's own
+                        // playlists and the mixes YouTube generated for them then appear without
+                        // having to trigger a manual Sync from Settings.
+                        LaunchedEffect(currentTabId) {
+                            if (currentTabId == LibraryTabId.PLAYLISTS ||
+                                currentTabId == LibraryTabId.ARTISTS
+                            ) {
+                                playerViewModel.syncYouTubeLibraryIfDue()
+                            }
                         }
 
                         val currentSelectedSortOption: SortOption? = when (currentTabId) {

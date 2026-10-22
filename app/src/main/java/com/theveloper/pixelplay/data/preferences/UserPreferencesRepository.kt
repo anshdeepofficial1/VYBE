@@ -114,6 +114,74 @@ enum class AlbumArtQuality(val maxSize: Int, val label: String) {
 }
 
 /**
+ * Shape used for the album artwork in the full player.
+ *
+ * [ROUNDED] is the classic sleeve, [SQUARE] is a flat edge-to-edge cover, and [DISC] draws the
+ * artwork as a vinyl/CD circle so the player can look like a real deck.
+ */
+enum class AlbumArtShape(val label: String) {
+    ROUNDED("Rounded"),
+    SQUARE("Square"),
+    DISC("Disc")
+}
+
+/**
+ * The four complete looks VYBE ships with. Each one is a whole-app decision rather than a
+ * per-screen toggle, so the navigation bar, every shelf, every sheet and the player itself always
+ * agree with each other.
+ *
+ * [MATERIAL] is the plain Material surface stack with no artwork behind anything.
+ * [GESTURE] keeps that Material app but lets the blurred cover ride in behind it while the player
+ * sheet is dragged up, so the blur is tied to the gesture instead of always being there.
+ * [IMMERSIVE] is the cover blurred behind every screen, bar and sheet, permanently.
+ * [LIQUID] is the Apple-style liquid glass treatment: much more translucent panels, a brighter
+ * specular sheen and light rim, and fluid motion on top of the same backdrop.
+ *
+ * Glass themes all read [ThemeGlassControls] so blur strength, panel opacity, the sheen, the edge
+ * light and the shadow remain individually adjustable.
+ */
+enum class AppUiStyle(val label: String, val description: String) {
+    MATERIAL("Material UI", "Plain Material surfaces, no artwork behind the app"),
+    GESTURE("Gesture Blur", "The cover blur slides in as you pull the player up"),
+    IMMERSIVE("Immersive Artwork", "The current cover blurred behind the whole app"),
+    LIQUID("Liquid Glass", "Apple-style liquid glass: translucent, luminous, fluid");
+
+    /** Themes that put a glass layer behind the UI and therefore honour [ThemeGlassControls]. */
+    val usesGlassBackdrop: Boolean get() = this != MATERIAL
+
+    companion object {
+        fun fromName(value: String?): AppUiStyle = when (value) {
+            // Names from the earlier three-theme selector, kept so no install loses its look.
+            "GLASS" -> IMMERSIVE
+            "PLAYER" -> MATERIAL
+            else -> entries.firstOrNull { it.name == value } ?: MATERIAL
+        }
+    }
+}
+
+/**
+ * The per-theme glass knobs exposed under Settings → Appearance → Theme.
+ *
+ * Defaults are the values that shipped as the fixed glass look, so moving a slider either way is
+ * a visible change from what the user already had.
+ *
+ * @property backdropArtwork blur the current cover behind the app (glass themes only)
+ * @property blurStrength 0..100, how far the backdrop cover is blurred
+ * @property panelAlpha 0..100, how solid glass panels read; higher is more opaque
+ * @property sheen the light falloff across the top of each panel
+ * @property edgeLight the hairline highlight around each panel
+ * @property shadow the soft drop shadow that gives panels depth
+ */
+data class ThemeGlassControls(
+    val backdropArtwork: Boolean = true,
+    val blurStrength: Int = 60,
+    val panelAlpha: Int = 58,
+    val sheen: Boolean = true,
+    val edgeLight: Boolean = true,
+    val shadow: Boolean = true,
+)
+
+/**
  * Preferred quality for online playback. LOSSLESS never invents or transcodes a
  * lossless stream: it selects one only when the active provider actually exposes a
  * lossless codec, otherwise playback falls back to the provider's highest stream.
@@ -206,6 +274,13 @@ class UserPreferencesRepository @Inject constructor(
         val CAROUSEL_STYLE = stringPreferencesKey("carousel_style")
         val IMMERSIVE_ARTWORK_ENABLED = booleanPreferencesKey("immersive_artwork_enabled")
         val FULL_APP_IMMERSIVE_ENABLED = booleanPreferencesKey("full_app_immersive_enabled")
+        val APP_UI_STYLE = stringPreferencesKey("app_ui_style")
+        val THEME_BACKDROP_ARTWORK = booleanPreferencesKey("theme_backdrop_artwork")
+        val THEME_BLUR_STRENGTH = intPreferencesKey("theme_blur_strength")
+        val THEME_PANEL_ALPHA = intPreferencesKey("theme_panel_alpha")
+        val THEME_SHEEN = booleanPreferencesKey("theme_sheen")
+        val THEME_EDGE_LIGHT = booleanPreferencesKey("theme_edge_light")
+        val THEME_SHADOW = booleanPreferencesKey("theme_shadow")
         val LIBRARY_NAVIGATION_MODE = stringPreferencesKey("library_navigation_mode")
         val LAUNCH_TAB = stringPreferencesKey("launch_tab")
 
@@ -225,6 +300,7 @@ class UserPreferencesRepository @Inject constructor(
         val HI_FI_MODE_ENABLED = booleanPreferencesKey("hi_fi_mode_enabled")
         val ONLINE_AUDIO_QUALITY = stringPreferencesKey("online_audio_quality_v1")
         val SKIP_SILENCE_ENABLED = booleanPreferencesKey("skip_silence_enabled")
+        val DISABLE_AUDIO_OFFLOAD = booleanPreferencesKey("disable_audio_offload")
         val CROSSFADE_DURATION = intPreferencesKey("crossfade_duration")
         val CUSTOM_GENRES = stringSetPreferencesKey("custom_genres")
         val CUSTOM_GENRE_ICONS = stringPreferencesKey("custom_genre_icons")
@@ -298,6 +374,7 @@ class UserPreferencesRepository @Inject constructor(
 
         // Developer options
         val ALBUM_ART_QUALITY = stringPreferencesKey("album_art_quality")
+        val ALBUM_ART_SHAPE = stringPreferencesKey("album_art_shape_v1")
         val ALBUM_ART_CACHE_LIMIT_MB = intPreferencesKey("album_art_cache_limit_mb")
         val TAP_BACKGROUND_CLOSES_PLAYER = booleanPreferencesKey("tap_background_closes_player")
         val HAPTICS_ENABLED = booleanPreferencesKey("haptics_enabled")
@@ -341,6 +418,8 @@ class UserPreferencesRepository @Inject constructor(
         val SCREENSHOT_PRIVACY = booleanPreferencesKey("screenshot_privacy")
         val SPONSOR_BLOCK_ENABLED = booleanPreferencesKey("sponsor_block_enabled")
         val DATA_SAVER_ENABLED = booleanPreferencesKey("data_saver_enabled")
+        val MUSIC_VISUALIZER_ENABLED = booleanPreferencesKey("music_visualizer_enabled")
+        val ONLINE_CONTENT_VERSION = intPreferencesKey("online_content_version")
         val SMART_EQ_ENABLED = booleanPreferencesKey("smart_eq_enabled")
         val DYNAMIC_ISLAND_ENABLED = booleanPreferencesKey("dynamic_island_enabled")
         val ANIMATED_ARTWORK_ENABLED = booleanPreferencesKey("animated_artwork_enabled")
@@ -522,6 +601,20 @@ class UserPreferencesRepository @Inject constructor(
         dataStore.edit { it[PreferencesKeys.SKIP_SILENCE_ENABLED] = enabled }
     }
 
+    /**
+     * When enabled, playback bypasses the Android audio-offload path and runs through the standard
+     * MediaCodec + AudioTrack pipeline. Offload is cheaper on battery, but a few audio HALs report a
+     * position clock that runs ahead of the real one at the very start of a stream, which is heard
+     * as the first moment of a track playing too fast before it settles. This switch exists so a
+     * listener who hits that behaviour can pin playback to the fully-synchronous path.
+     */
+    val disableAudioOffloadFlow: Flow<Boolean> =
+        pref { it[PreferencesKeys.DISABLE_AUDIO_OFFLOAD] ?: false }
+
+    suspend fun setDisableAudioOffload(enabled: Boolean) {
+        dataStore.edit { it[PreferencesKeys.DISABLE_AUDIO_OFFLOAD] = enabled }
+    }
+
     val keepPlayingInBackgroundFlow: Flow<Boolean> =
         pref { it[PreferencesKeys.KEEP_PLAYING_IN_BACKGROUND] ?: true }
 
@@ -548,6 +641,18 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setDataSaverEnabled(enabled: Boolean) {
         dataStore.edit { it[PreferencesKeys.DATA_SAVER_ENABLED] = enabled }
+    }
+
+    /**
+     * Whether the player draws a live spectrum behind the seek bar. On by default: it is free of
+     * any extra permission (the analyser taps the audio processor chain) and it is the kind of
+     * detail a listener expects from a player that already animates everything else.
+     */
+    val musicVisualizerEnabledFlow: Flow<Boolean> =
+        pref { it[PreferencesKeys.MUSIC_VISUALIZER_ENABLED] ?: true }
+
+    suspend fun setMusicVisualizerEnabled(enabled: Boolean) {
+        dataStore.edit { it[PreferencesKeys.MUSIC_VISUALIZER_ENABLED] = enabled }
     }
 
     val smartEqEnabledFlow: Flow<Boolean> = pref { it[PreferencesKeys.SMART_EQ_ENABLED] ?: false }
@@ -908,6 +1013,30 @@ suspend fun markDirectoryRulesVersionApplied(version: Int) {
         }
     }
 
+    /**
+     * Version of the online catalogue rules the cached online rows were written under.
+     *
+     * Bumping this once is how a rule change (for example: YouTube Music album tracks only, no
+     * video uploads) reaches devices that already hold a mix built under the old rules.
+     */
+    val onlineContentVersionFlow: Flow<Int> =
+        pref { preferences -> preferences[PreferencesKeys.ONLINE_CONTENT_VERSION] ?: 0 }
+
+    suspend fun setOnlineContentVersion(version: Int) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.ONLINE_CONTENT_VERSION] = version
+        }
+    }
+
+    /** Drops the persisted mixes so the next Home load is built from a fresh provider answer. */
+    suspend fun clearSavedMixes() {
+        dataStore.edit { preferences ->
+            preferences.remove(PreferencesKeys.DAILY_MIX_SONG_IDS)
+            preferences.remove(PreferencesKeys.YOUR_MIX_SONG_IDS)
+            preferences[PreferencesKeys.LAST_DAILY_MIX_UPDATE] = 0L
+        }
+    }
+
     val isGenreGridViewFlow: Flow<Boolean> =
         dataStore.data.map { preferences ->
             preferences[PreferencesKeys.IS_GENRE_GRID_VIEW] ?: true
@@ -1260,6 +1389,70 @@ suspend fun markDirectoryRulesVersionApplied(version: Int) {
     val fullAppImmersiveEnabledFlow: Flow<Boolean> =
         pref { it[PreferencesKeys.FULL_APP_IMMERSIVE_ENABLED] ?: false }
 
+    val appUiStyleFlow: Flow<AppUiStyle> =
+        pref {
+            // Installs that predate the selector keep whatever they had switched on, instead of
+            // silently dropping back to plain Material.
+            it[PreferencesKeys.APP_UI_STYLE]?.let(AppUiStyle::fromName) ?: when {
+                it[PreferencesKeys.FULL_APP_IMMERSIVE_ENABLED] == true -> AppUiStyle.IMMERSIVE
+                it[PreferencesKeys.IMMERSIVE_ARTWORK_ENABLED] == true -> AppUiStyle.GESTURE
+                else -> AppUiStyle.MATERIAL
+            }
+        }
+
+    val themeGlassControlsFlow: Flow<ThemeGlassControls> =
+        pref {
+            ThemeGlassControls(
+                backdropArtwork = it[PreferencesKeys.THEME_BACKDROP_ARTWORK] ?: true,
+                blurStrength = (it[PreferencesKeys.THEME_BLUR_STRENGTH] ?: 60).coerceIn(0, 100),
+                panelAlpha = (it[PreferencesKeys.THEME_PANEL_ALPHA] ?: 58).coerceIn(10, 100),
+                sheen = it[PreferencesKeys.THEME_SHEEN] ?: true,
+                edgeLight = it[PreferencesKeys.THEME_EDGE_LIGHT] ?: true,
+                shadow = it[PreferencesKeys.THEME_SHADOW] ?: true,
+            )
+        }
+
+    suspend fun setThemeBackdropArtwork(enabled: Boolean) {
+        dataStore.edit { it[PreferencesKeys.THEME_BACKDROP_ARTWORK] = enabled }
+    }
+
+    suspend fun setThemeBlurStrength(value: Int) {
+        dataStore.edit { it[PreferencesKeys.THEME_BLUR_STRENGTH] = value.coerceIn(0, 100) }
+    }
+
+    suspend fun setThemePanelAlpha(value: Int) {
+        dataStore.edit { it[PreferencesKeys.THEME_PANEL_ALPHA] = value.coerceIn(10, 100) }
+    }
+
+    suspend fun setThemeSheen(enabled: Boolean) {
+        dataStore.edit { it[PreferencesKeys.THEME_SHEEN] = enabled }
+    }
+
+    suspend fun setThemeEdgeLight(enabled: Boolean) {
+        dataStore.edit { it[PreferencesKeys.THEME_EDGE_LIGHT] = enabled }
+    }
+
+    suspend fun setThemeShadow(enabled: Boolean) {
+        dataStore.edit { it[PreferencesKeys.THEME_SHADOW] = enabled }
+    }
+
+    /**
+     * Selecting a theme writes the artwork switches too, so there is exactly one source of truth.
+     * The two legacy switches stay in sync for older code paths, but the theme itself is what the
+     * UI and the root backdrop read.
+     */
+    suspend fun setAppUiStyle(style: AppUiStyle) {
+        dataStore.edit { prefs ->
+            prefs[PreferencesKeys.APP_UI_STYLE] = style.name
+            // Every theme except Material puts the blurred cover somewhere in the app; Material
+            // keeps the classic solid player as well.
+            val usesGlass = style.usesGlassBackdrop
+            prefs[PreferencesKeys.FULL_APP_IMMERSIVE_ENABLED] = usesGlass
+            prefs[PreferencesKeys.IMMERSIVE_ARTWORK_ENABLED] = usesGlass
+            if (usesGlass) prefs[PreferencesKeys.CAROUSEL_STYLE] = CarouselStyle.NO_PEEK
+        }
+    }
+
     suspend fun setImmersiveArtworkEnabled(enabled: Boolean) {
         dataStore.edit {
             it[PreferencesKeys.IMMERSIVE_ARTWORK_ENABLED] = enabled
@@ -1538,6 +1731,17 @@ suspend fun markDirectoryRulesVersionApplied(version: Int) {
 
     suspend fun setAlbumArtQuality(quality: AlbumArtQuality) {
         dataStore.edit { it[PreferencesKeys.ALBUM_ART_QUALITY] = quality.name }
+    }
+
+    val albumArtShapeFlow: Flow<AlbumArtShape> =
+        pref { preferences ->
+            preferences[PreferencesKeys.ALBUM_ART_SHAPE]
+                ?.let { runCatching { AlbumArtShape.valueOf(it) }.getOrNull() }
+                ?: AlbumArtShape.ROUNDED
+        }
+
+    suspend fun setAlbumArtShape(shape: AlbumArtShape) {
+        dataStore.edit { it[PreferencesKeys.ALBUM_ART_SHAPE] = shape.name }
     }
 
     val albumArtCacheLimitMbFlow: Flow<Int> =

@@ -92,6 +92,17 @@ internal fun rememberSheetActionHandlers(
                     route = Screen.AlbumDetail.createRoute(song.albumId),
                     patternToPop = Screen.AlbumDetail.route
                 )
+            } else if (song.id.startsWith("yt_")) {
+                // Streamed tracks carry no album id; let the player resolve the release in
+                // the online catalogue, and surface the "album/playlist not available"
+                // notice when nothing matches instead of failing silently.
+                playerViewModelState.value.triggerAlbumNavigationFromPlayer(song)
+            } else if (song.album.isBlank()) {
+                android.widget.Toast.makeText(
+                    navController.context,
+                    navController.context.getString(com.theveloper.pixelplay.R.string.song_album_navigation_unavailable),
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
             Unit
         }

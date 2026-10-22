@@ -80,6 +80,7 @@ import kotlin.math.roundToInt
 import androidx.compose.ui.res.stringResource
 import com.theveloper.pixelplay.R
 import com.theveloper.pixelplay.data.preferences.AlbumArtQuality
+import com.theveloper.pixelplay.data.preferences.AlbumArtShape
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -791,6 +792,72 @@ fun ExperimentalSettingsScreen(
                 }
             }
 
+            item(key = "album_art_shape_section") {
+                val albumArtShape by settingsViewModel.albumArtShape.collectAsStateWithLifecycle()
+
+                SettingsSection(
+                    title = "Album art shape",
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Rounded.LinearScale,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = Color.Transparent,
+                        modifier = Modifier.padding(horizontal = 0.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            AlbumArtShape.entries.forEach { shape ->
+                                val isSelected = shape == albumArtShape
+                                Surface(
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = { settingsViewModel.setAlbumArtShape(shape) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                                            .fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = shape.label,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                fontWeight = if (isSelected) androidx.compose.ui.text.font.FontWeight.Bold else androidx.compose.ui.text.font.FontWeight.Normal
+                                            )
+                                            Text(
+                                                text = albumArtShapeLine(shape),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.LinearScale,
+                                                contentDescription = stringResource(R.string.common_selected),
+                                                tint = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             item(key = "experimental_bottom_spacer") {
                 Spacer(modifier = Modifier.height(MiniPlayerHeight + 36.dp))
             }
@@ -815,6 +882,12 @@ private fun albumArtQualityLine(quality: AlbumArtQuality): String =
             AlbumArtQuality.ORIGINAL -> R.string.settings_exp_album_art_quality_original_line
         }
     )
+
+private fun albumArtShapeLine(shape: AlbumArtShape): String = when (shape) {
+    AlbumArtShape.ROUNDED -> "Classic cover with softly rounded corners"
+    AlbumArtShape.SQUARE -> "Flat, edge-to-edge cover"
+    AlbumArtShape.DISC -> "Circular record with spindle hole"
+}
 
 @Composable
 private fun TriggerModeOptionCard(

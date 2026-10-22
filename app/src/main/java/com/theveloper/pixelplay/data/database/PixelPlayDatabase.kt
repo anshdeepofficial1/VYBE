@@ -39,7 +39,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AiUsageEntity::class,
         DownloadedSongEntity::class
     ],
-    version = 45,
+    version = 46,
     exportSchema = true
 )
 abstract class PixelPlayDatabase : RoomDatabase() {
@@ -1556,6 +1556,15 @@ abstract class PixelPlayDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE TABLE IF NOT EXISTS `online_song_cache` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `artist` TEXT NOT NULL, `album` TEXT NOT NULL, `albumArtUrl` TEXT, `duration` INTEGER NOT NULL, `path` TEXT NOT NULL, `contentUri` TEXT NOT NULL, `mimeType` TEXT, PRIMARY KEY(`id`))"
                 )
+            }
+        }
+
+        val MIGRATION_45_46 = object : Migration(45, 46) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Keep the provider credits and release id through a restart so restored
+                // tracks still navigate to the real artist profile and album page.
+                db.execSQL("ALTER TABLE `online_song_cache` ADD COLUMN `artistsJson` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `online_song_cache` ADD COLUMN `remoteAlbumBrowseId` TEXT DEFAULT NULL")
             }
         }
 

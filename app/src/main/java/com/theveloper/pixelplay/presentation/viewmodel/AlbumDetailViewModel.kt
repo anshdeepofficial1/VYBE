@@ -157,6 +157,10 @@ class AlbumDetailViewModel @Inject constructor(
     }
 
     private fun loadAlbumData(id: Long, fallbackTitle: String = "", fallbackArtist: String = "") {
+        // Mutable so a local album row that carries no tracks can still be resolved online by its
+        // own title/artist. Without this, a stale albums row renders an album page with zero songs.
+        var onlineFallbackTitle = fallbackTitle
+        var onlineFallbackArtist = fallbackArtist
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             try {
@@ -182,6 +186,10 @@ class AlbumDetailViewModel @Inject constructor(
                             remoteBrowseId = firstSong.remoteAlbumBrowseId,
                         )
                     }
+                    if (onlineFallbackTitle.isBlank() && resolvedAlbum != null) {
+                        onlineFallbackTitle = resolvedAlbum.title
+                        onlineFallbackArtist = resolvedAlbum.artist
+                    }
                     if (resolvedAlbum != null && songs.isNotEmpty()) {
                         AlbumDetailUiState(
                             album = resolvedAlbum,
@@ -192,15 +200,10 @@ class AlbumDetailViewModel @Inject constructor(
                             ),
                             isLoading = false
                         )
-                    } else if (fallbackTitle.isNotBlank()) {
-                        // Fall back to online lookup
+                    } else if (onlineFallbackTitle.isNotBlank()) {
+                        // No local tracks for this album: resolve the real release online rather
+                        // than showing an album page with an empty track list.
                         null
-                    } else if (resolvedAlbum != null) {
-                        AlbumDetailUiState(
-                            album = resolvedAlbum,
-                            songs = emptyList(),
-                            isLoading = false
-                        )
                     } else {
                         AlbumDetailUiState(
                             error = context.getString(R.string.album_detail_not_found),
@@ -217,16 +220,16 @@ class AlbumDetailViewModel @Inject constructor(
                         )
                     }
                     .collect { newState ->
-                        if (newState == null && fallbackTitle.isNotBlank()) {
-                            loadOnlineAlbumByMetadata(fallbackTitle, fallbackArtist)
+                        if (newState == null && onlineFallbackTitle.isNotBlank()) {
+                            loadOnlineAlbumByMetadata(onlineFallbackTitle, onlineFallbackArtist)
                         } else if (newState != null) {
                             _uiState.value = newState
                         }
                     }
 
             } catch (e: Exception) {
-                if (fallbackTitle.isNotBlank()) {
-                    loadOnlineAlbumByMetadata(fallbackTitle, fallbackArtist)
+                if (onlineFallbackTitle.isNotBlank()) {
+                    loadOnlineAlbumByMetadata(onlineFallbackTitle, onlineFallbackArtist)
                 } else {
                     _uiState.update {
                         it.copy(

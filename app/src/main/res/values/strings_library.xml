@@ -520,6 +520,7 @@
     <string name="album_detail_id_not_found">Album ID not found</string>
     <string name="album_detail_error_loading_album">Error loading album data: %s</string>
     <string name="album_detail_not_found">Album not found</string>
+    <string name="song_album_navigation_unavailable">No album or playlist for this song</string>
 
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">Invalid artist ID</string>

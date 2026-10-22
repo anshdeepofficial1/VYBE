@@ -121,7 +121,7 @@ class LibraryStateHolder @Inject constructor(
         ) { sort, filter, minTracks ->
             Triple(sort, filter, minTracks)
         }.flatMapLatest { (sortOption, filter, minTracks) ->
-            musicRepository.getPaginatedAlbums(sortOption, filter, minTracks.coerceAtLeast(2))
+            musicRepository.getPaginatedAlbums(sortOption, filter, minTracks.coerceAtLeast(1))
         }
         .flowOn(Dispatchers.IO)
 

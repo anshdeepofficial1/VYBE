@@ -11,6 +11,6 @@
             android:action="com.theveloper.pixelplay.ACTION_SHUFFLE_ALL"
             android:targetPackage="com.vybe.musicplayer"
             android:targetClass="com.theveloper.pixelplay.MainActivity" />
-        <categories android:name="android.shortcut.conversation" />
+        <categories android:name="android.shortcut.fallback" />
     </shortcut>
 </shortcuts>

@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.theveloper.pixelplay.R
 import com.theveloper.pixelplay.data.model.Artist
 import com.theveloper.pixelplay.data.model.Song
+import com.theveloper.pixelplay.data.network.ytmusic.isRealSongEntry
 import com.theveloper.pixelplay.data.repository.ArtistImageRepository
 import com.theveloper.pixelplay.data.repository.MusicRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -149,16 +150,31 @@ class ArtistDetailViewModel @Inject constructor(
         currentLoadJob?.cancel()
         currentLoadJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
-            val match = withTimeoutOrNull(ARTIST_PROFILE_TIMEOUT_MS) {
-                onlineMusicRepository.searchMusicStructured(name).artists
-                    .firstOrNull { it.name.equals(name, ignoreCase = true) }
-                    ?: onlineMusicRepository.searchMusicStructured(name).artists.firstOrNull()
-            }
+            val wanted = name.trim()
+            val wantedKey = wanted.normalizedArtistKey()
+            val results = withTimeoutOrNull(ARTIST_PROFILE_TIMEOUT_MS) {
+                onlineMusicRepository.searchMusicStructured(wanted).artists
+            }.orEmpty()
+            // Only an actual name match may be opened. The previous fallback took the first artist
+            // result even when it had a completely different name, which is why tapping an artist
+            // from a list could open somebody else's page. YouTube is full of namesakes that
+            // normalise to the same key (the Nigerian rapper "Morell" vs the lowercase electronic
+            // "morell"), so a case-sensitive exact name always wins before any normalised match.
+            val match = results.firstOrNull { it.name == wanted }
+                ?: results.firstOrNull { it.name.normalizedArtistKey() == wantedKey }
+                ?: results.firstOrNull { candidate ->
+                    val key = candidate.name.normalizedArtistKey()
+                    key.isNotBlank() && wantedKey.isNotBlank() &&
+                        (key.contains(wantedKey) || wantedKey.contains(key))
+                }
             if (match != null) {
                 loadOnlineArtistData(match.browseId)
             } else {
                 _uiState.update {
-                    it.copy(error = context.getString(R.string.artist_detail_not_found), isLoading = false)
+                    it.copy(
+                        error = "Couldn't find \"$wanted\" on YouTube Music.",
+                        isLoading = false,
+                    )
                 }
             }
         }
@@ -176,7 +192,7 @@ class ArtistDetailViewModel @Inject constructor(
                 val matchedArtist = if (directProfile == null) {
                     withTimeoutOrNull(ARTIST_PROFILE_TIMEOUT_MS) {
                         onlineMusicRepository.searchMusicStructured(browseId).artists
-                            .firstOrNull { it.name.equals(browseId, ignoreCase = true) }
+                            .firstOrNull { it.name.normalizedArtistKey() == browseId.normalizedArtistKey() }
                     }
                 } else null
                 val resolvedBrowseId = matchedArtist?.browseId ?: browseId
@@ -195,7 +211,7 @@ class ArtistDetailViewModel @Inject constructor(
                     val effectiveUrl = profile.bannerUrl ?: profile.avatarUrl
                     _uiState.value = ArtistDetailUiState(
                         artist = artist,
-                        songs = profile.topSongs,
+                        songs = profile.topSongs.filter { isRealSongEntry(it) },
                         videos = profile.videos,
                         albumSections = emptyList(),
                         effectiveImageUrl = effectiveUrl,
@@ -257,6 +273,27 @@ class ArtistDetailViewModel @Inject constructor(
 
                         val albumSections = buildAlbumSections(songs)
                         val orderedSongs = albumSections.flatMap { it.songs }
+
+                        // A local artist row with no songs is a stale/skewed entry (the same
+                        // failure mode the album page had). Resolve the real profile online instead
+                        // of rendering an artist page with an empty track list.
+                        if (orderedSongs.isEmpty()) {
+                            val onlineId = artist.remoteBrowseId?.takeIf { it.isNotBlank() }
+                            when {
+                                onlineId != null -> {
+                                    loadOnlineArtistData(onlineId)
+                                    return@collect
+                                }
+                                fallbackName.isNotBlank() -> {
+                                    loadOnlineArtistByName(fallbackName)
+                                    return@collect
+                                }
+                                artist.name.isNotBlank() -> {
+                                    loadOnlineArtistByName(artist.name)
+                                    return@collect
+                                }
+                            }
+                        }
 
                         // 1) Resolve effective image URL (custom > Deezer, may fetch from API)
                         val effectiveUrl = artist.effectiveImageUrl
@@ -326,6 +363,7 @@ class ArtistDetailViewModel @Inject constructor(
             val profileImage = profile.bannerUrl ?: profile.avatarUrl ?: resolvedImage
             val baseSongs = (localSongs + profile.topSongs)
                 .filterNot { it.title.contains("jukebox", ignoreCase = true) || it.title.contains("mashup", ignoreCase = true) || it.duration > 900_000L }
+                .filter { isRealSongEntry(it) }
                 .distinctBy { it.id }
             _uiState.update { state ->
                 state.copy(
@@ -367,7 +405,9 @@ class ArtistDetailViewModel @Inject constructor(
             }
 
             val remoteSongs = (profile.topSongs + resolvedAlbums.flatMap { it.tracks }).distinctBy { it.id }
-            val completeSongs = (localSongs + remoteSongs).distinctBy { it.id }
+            val completeSongs = (localSongs + remoteSongs)
+                .filter { isRealSongEntry(it) }
+                .distinctBy { it.id }
             val releaseSections = resolvedAlbums
                 .sortedWith(
                     compareByDescending<com.theveloper.pixelplay.data.network.ytmusic.YouTubeAlbumDetails> { it.year ?: 0 }
@@ -564,3 +604,13 @@ private const val RELEASE_BATCH_SIZE = 4
 private const val REMOTE_ARTIST_PREFIX = "remote_artist|"
 private const val LOOKUP_ARTIST_PREFIX = "lookup_artist|"
 private const val COMPOSITE_ARTIST_PREFIX = "artist_meta|"
+
+/**
+ * Comparison key for artist names. Case, spacing, punctuation and "&" versus "and" must not decide
+ * whether two profiles are the same artist - that mismatch is what let the old code fall through
+ * to "first search result" and open a completely different artist.
+ */
+private fun String.normalizedArtistKey(): String =
+    lowercase()
+        .replace("&", "and")
+        .filter { it.isLetterOrDigit() }

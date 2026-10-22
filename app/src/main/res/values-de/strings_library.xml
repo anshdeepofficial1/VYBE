@@ -514,7 +514,7 @@
     <string name="album_detail_id_not_found">Album-ID nicht gefunden</string>
     <string name="album_detail_error_loading_album">Fehler beim Laden des Albums: %s</string>
     <string name="album_detail_not_found">Album nicht gefunden</string>
-
+    <string name="song_album_navigation_unavailable">Kein Album und keine Playlist für diesen Titel</string>
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">Ungültige Künstler-ID</string>
     <string name="artist_detail_id_not_found">Künstler-ID nicht gefunden</string>

@@ -508,7 +508,7 @@
     <string name="album_detail_id_not_found">앨범 ID를 찾을 수 없습니다</string>
     <string name="album_detail_error_loading_album">앨범 데이터를 불러오는 중 오류 발생: %s</string>
     <string name="album_detail_not_found">앨범을 찾을 수 없습니다</string>
-
+    <string name="song_album_navigation_unavailable">이 노래의 앨벌이나 플레이리스트가 없습니다</string>
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">유효하지 않은 아티스트 ID</string>
     <string name="artist_detail_id_not_found">아티스트 ID를 찾을 수 없습니다</string>

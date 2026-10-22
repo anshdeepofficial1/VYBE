@@ -11,6 +11,7 @@ import com.theveloper.pixelplay.data.network.ytmusic.YouTubeArtist
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeMusicEngine
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeSearchResult
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeTopResult
+import com.theveloper.pixelplay.data.network.ytmusic.isRealSongEntry
 import com.theveloper.pixelplay.data.network.ytmusic.YouTubeAccountManager
 import com.theveloper.pixelplay.data.preferences.UserPreferencesRepository
 import com.theveloper.pixelplay.data.repository.OnlineMusicRepository
@@ -48,6 +49,52 @@ enum class OnlineSearchFilter {
     ALBUMS,
     ARTISTS
 }
+
+/**
+ * Normalized identity of a recording. The same song is routinely published under several video
+ * ids (album, single, topic channel, regional re-upload) and YouTube Music treats those as
+ * different items. Grouping by this key is what stops "the same song again" from appearing in
+ * Quick Picks, Recommended for you and charts.
+ */
+internal fun trackKeyOf(title: String, artist: String): String {
+    fun normalize(value: String): String = value
+        .lowercase()
+        .replace(Regex("\\([^)]*\\)"), " ")
+        .replace(Regex("\\[[^]]*]"), " ")
+        .replace(Regex("[^\\p{L}\\p{N} ]"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
+    val leadArtist = artist.substringBefore(",").substringBefore("&").trim()
+    return normalize(title) + "|" + normalize(leadArtist)
+}
+
+/** Collapses the same recording under different video ids into a single entry. */
+internal fun List<Song>.distinctByTrack(): List<Song> = distinctBy { trackKeyOf(it.title, it.artist) }
+
+/** A focused mood/genre destination opened as a popup so it never replaces the Explore feed. */
+data class DiscoveryDetailState(
+    val title: String,
+    val isLoading: Boolean,
+    val songs: List<Song>,
+)
+
+/** Moods are backed by YouTube Music mood destination pages. */private val MOOD_LABELS = setOf(
+    "Workout", "Feel good", "Energize", "Relax", "Romance", "Romantic",
+    "Focus", "Party", "Chill", "Sleep", "Sad", "Happy"
+)
+
+/** Languages/regions are genre destinations: they must resolve to real songs of that genre. */
+private val GENRE_LABELS = setOf(
+    "Punjabi", "Indian", "Hip-hop", "Hindi", "Bollywood", "Tamil", "Telugu", "English"
+)
+
+/**
+ * Precomputed lowercase form of [MOOD_LABELS] and [GENRE_LABELS]. The title filter runs for every
+ * candidate track returned by a browse page, so the set is built once instead of per song.
+ */
+private val MOOD_AND_GENRE_LABELS_LOWER: Set<String> =
+    (MOOD_LABELS + GENRE_LABELS).mapTo(HashSet()) { it.lowercase() }
 
 @HiltViewModel
 class OnlineSearchViewModel @Inject constructor(
@@ -107,6 +154,24 @@ class OnlineSearchViewModel @Inject constructor(
 
     private val _aiRecommendations = MutableStateFlow<List<Song>>(emptyList())
     val aiRecommendations: StateFlow<List<Song>> = _aiRecommendations.asStateFlow()
+
+    /**
+     * Incremented by the refresh button. The ranked pool is the same on every fetch, so without
+     * a generation the button re-rendered an identical grid and looked broken.
+     */
+    private var recommendationGeneration = 0
+
+    /**
+     * Charts live in their own state so a background Home/trending refresh can never overwrite a
+     * chart request and end up rendering non-chart content under the "Top Charts" heading.
+     */
+    private val _chartTracks = MutableStateFlow<List<Song>>(emptyList())
+    val chartTracks: StateFlow<List<Song>> = _chartTracks.asStateFlow()
+
+    /** Currently open mood/genre popup. Null means the Explore feed is the active surface. */
+    private val _discoveryDetail = MutableStateFlow<DiscoveryDetailState?>(null)
+    val discoveryDetail: StateFlow<DiscoveryDetailState?> = _discoveryDetail.asStateFlow()
+    private var discoveryDetailJob: Job? = null
 
     private val _recentSearches = MutableStateFlow<List<com.theveloper.pixelplay.data.model.SearchHistoryItem>>(emptyList())
     val recentSearches: StateFlow<List<com.theveloper.pixelplay.data.model.SearchHistoryItem>> = _recentSearches.asStateFlow()
@@ -240,6 +305,57 @@ class OnlineSearchViewModel @Inject constructor(
         loadTrendingAndRecommendations()
     }
 
+    /** User-triggered refresh of the personalized Explore feed. */
+    fun refreshRecommendations() {
+        _discoveryDetail.value = null
+        // A plain reload returns exactly the same ranked pool, so the grid never changed. Advance
+        // the generation first so the next result is rotated onto a different window of the pool.
+        recommendationGeneration += 1
+        loadTrendingAndRecommendations()
+    }
+
+    /**
+     * Opens a focused mood/genre destination as a popup. The Explore feed behind it is untouched,
+     * so switching between moods never rewrites the main "Recommended for you" shelf.
+     */
+    fun openDiscoveryDetail(label: String) {
+        discoveryDetailJob?.cancel()
+        val title = if (label in MOOD_LABELS) "$label for you" else "$label songs"
+        _discoveryDetail.value = DiscoveryDetailState(title = title, isLoading = true, songs = emptyList())
+        discoveryDetailJob = viewModelScope.launch {
+            try {
+                val resolved = repository
+                    .getFastPersonalizedDiscovery(listOf(label))
+                    .filter(::isCleanOriginalAudio)
+                    .distinctByTrack()
+                _discoveryDetail.value = DiscoveryDetailState(title, isLoading = false, songs = resolved)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _discoveryDetail.value = DiscoveryDetailState(title, isLoading = false, songs = emptyList())
+            }
+        }
+    }
+
+    fun closeDiscoveryDetail() {
+        discoveryDetailJob?.cancel()
+        _discoveryDetail.value = null
+    }
+
+    /**
+     * Moves the visible window of the ranked pool on every explicit refresh.
+     *
+     * The recommendation engine is deterministic, so reloading returned the exact same ordered
+     * list and the refresh button appeared to do nothing. Rotating by a generation-derived offset
+     * shows genuinely different tracks while keeping the engine's ranking intact.
+     */
+    private fun rotateForRefresh(pool: List<Song>, generation: Int): List<Song> {
+        if (pool.size <= 1 || generation <= 0) return pool
+        val offset = (generation * 7) % pool.size
+        if (offset == 0) return pool
+        return pool.drop(offset) + pool.take(offset)
+    }
+
     private fun isCleanOriginalAudio(song: Song): Boolean {
         // 1. Strictly exclude videos (only pure audio tracks)
         if (song.isMusicVideo || song.contentUriString.startsWith("yt_video:") || song.id.startsWith("yt_video_")) {
@@ -259,9 +375,27 @@ class OnlineSearchViewModel @Inject constructor(
             "ringtone", "status", "whatsapp", "tik tok", "tiktok", "reels", "shorts",
             "bgm", "instrumental", "jukebox", "non stop", "nonstop", "megamix",
             "compilation", "full album", "all songs", "audios", "edit", "vibes mix",
-            "music video", "official video", "lyric video"
+            "music video", "official video", "lyric video",
+            // Spatial/novelty fan edits. These are re-uploads of someone else's recording with a
+            // filter applied, so they are never the real song a listener searched for.
+            "8d audio", "8d version", "8d music", "8d song", "8d beat", "8d sound",
+            "3d audio", "3d version", "nightcore", "chipmunk", "sped up version",
+            "reverb version", "slowed version", "tiktok version", "reels version",
+            "whatsapp status", "ringtone version", "8-bit", "8bit version",
+            // Devotional / discourse content. It lives in the regional YouTube Music Home
+            // shelves but is not something a listener asked for, so it must never be
+            // promoted into "Recommended for you" or a chart.
+            "aarti", "arti ", "aarti ", "bhajan", "bhajans", "chalisa", "kirtan",
+            "devotional", "pravachan", "katha", "mantra", "shloka", "stotram",
+            "puja ", "pooja ", "havan", "satsang", "kirtan", "dhun", "vandana",
         )
         if (bannedTerms.any { combined.contains(it) }) {
+            return false
+        }
+
+        // 2b. A track whose whole title is just the search/mood word ("Punjabi", "Feel good")
+        // is a keyword artefact, never the song the listener meant.
+        if (title.trim() in MOOD_AND_GENRE_LABELS_LOWER) {
             return false
         }
 
@@ -292,7 +426,9 @@ class OnlineSearchViewModel @Inject constructor(
                 if (_trendingTracks.value.isEmpty() && historySongs.isNotEmpty()) {
                     _trendingTracks.value = historySongs
                     baseTrendingTracks = historySongs
-                    _aiRecommendations.value = historySongs.take(12)
+                    // Do not seed "Recommended for you" with the listening history. Replaying what
+                    // the listener just heard under a recommendation header is exactly what made
+                    // the shelf feel wrong; it stays empty until the ranked pool is ready.
                     _isLoading.value = false
                 }
                 val listenedSongIds = historySongs.map { it.id }.toSet()
@@ -362,19 +498,22 @@ class OnlineSearchViewModel @Inject constructor(
                 val releases = releasesResult.getOrDefault(emptyList()).distinctBy { it.id }
                     .filter(::isCleanOriginalAudio)
 
-                if (chartTracks.isNotEmpty()) {
-                    baseTrendingTracks = chartTracks
-                    _trendingTracks.value = chartTracks
-                } else if (providerHomeTracks.isNotEmpty()) {
-                    baseTrendingTracks = providerHomeTracks
-                    _trendingTracks.value = providerHomeTracks
+                if (providerHomeTracks.isNotEmpty()) {
+                    // The account's own YouTube Music Home graph is the authoritative
+                    // "Best for You" surface. Regional charts are a separate, explicitly
+                    // labelled destination and must not become the default feed.
+                    baseTrendingTracks = providerHomeTracks.distinctByTrack()
+                    _trendingTracks.value = baseTrendingTracks
+                } else if (chartTracks.isNotEmpty()) {
+                    baseTrendingTracks = chartTracks.distinctByTrack()
+                    _trendingTracks.value = baseTrendingTracks
                 } else if (releases.isNotEmpty()) {
-                    _trendingTracks.value = releases
+                    _trendingTracks.value = releases.distinctByTrack()
                 } else if (historySongs.isNotEmpty()) {
-                    _trendingTracks.value = historySongs
+                    _trendingTracks.value = historySongs.distinctByTrack()
                 }
 
-                _latestReleaseTracks.value = releases
+                _latestReleaseTracks.value = releases.distinctByTrack()
                 _discoveryTitle.value = "Best for You"
 
                 // Combined fresh discovery pool
@@ -392,7 +531,7 @@ class OnlineSearchViewModel @Inject constructor(
                 } else {
                     chartTracks + providerHomeTracks
                 })
-                    .distinctBy { it.id }
+                    .distinctByTrack()
 
                 val finalRecommendationPool = if (freshDiscoveries.isNotEmpty()) {
                     freshDiscoveries
@@ -405,6 +544,8 @@ class OnlineSearchViewModel @Inject constructor(
 
                 val rankedRecommendations = rankForInterests(finalRecommendationPool, interests)
                     .filter(::isCleanOriginalAudio)
+                    .distinctByTrack()
+                    .let { pool -> rotateForRefresh(pool, recommendationGeneration) }
                     .take(15)
 
                 _aiRecommendations.value = rankedRecommendations
@@ -495,15 +636,15 @@ class OnlineSearchViewModel @Inject constructor(
                         val region = normalizedRegion(userPrefs.userRegionFlow.first())
                         val charts = repository.getTrendingTracks(region)
                             .filter(::isCleanOriginalAudio)
-                            .distinctBy { it.id }
-                        _trendingTracks.value = charts
+                            .distinctByTrack()
+                        _chartTracks.value = charts
                         if (charts.isEmpty()) {
                             _searchError.value = "YouTube Music did not return a chart for this region."
                         }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (error: Exception) {
-                        _trendingTracks.value = emptyList()
+                        _chartTracks.value = emptyList()
                         _searchError.value = error.message ?: "Could not load YouTube Music charts"
                     } finally {
                         _isLoading.value = false
@@ -540,24 +681,15 @@ class OnlineSearchViewModel @Inject constructor(
                     _searchError.value = null
                     try {
                         val region = normalizedRegion(userPrefs.userRegionFlow.first())
-                        val moodLabels = setOf(
-                            "Workout", "Feel good", "Energize", "Relax", "Romance",
-                            "Romantic", "Focus", "Party", "Chill", "Sleep", "Sad"
-                        )
-                        if (label in moodLabels) {
-                            _trendingTracks.value = repository
-                                .getFastPersonalizedDiscovery(listOf(label))
-                                .filter(::isCleanOriginalAudio)
-                                .distinctBy { it.id }
-                            _discoveryArtists.value = emptyList()
-                            _discoveryTitle.value = "$label for you"
-                        } else {
-                            val result = repository.searchMusicStructured(label, region)
-                            _trendingTracks.value = result.songs
-                                .filter(::isCleanOriginalAudio)
-                                .distinctBy { it.id }
-                            _discoveryArtists.value = result.artists
-                            _discoveryTitle.value = "Because you listen to $label"
+                        val resolved = repository
+                            .getFastPersonalizedDiscovery(listOf(label))
+                            .filter(::isCleanOriginalAudio)
+                            .distinctByTrack()
+                        _trendingTracks.value = resolved
+                        _discoveryArtists.value = emptyList()
+                        _discoveryTitle.value = when {
+                            label in MOOD_LABELS -> "$label for you"
+                            else -> "$label songs"
                         }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
@@ -608,7 +740,7 @@ class OnlineSearchViewModel @Inject constructor(
             _searchResultsSongs.value = cached.songs
             _searchResultsAlbums.value = cached.albums
             _searchResultsArtists.value = rankSearchArtists(trimmed, cached.artists)
-            _searchTopResult.value = cached.topResult
+            _searchTopResult.value = resolveSearchTopResult(cached.topResult, cached.songs)
             _isLoading.value = false
             loadSuggestions(trimmed)
             return
@@ -642,7 +774,10 @@ class OnlineSearchViewModel @Inject constructor(
                             _searchResultsArtists.value = rankSearchArtists(
                                 trimmed, youtubeResult.artists, youtubeResult.songs
                             )
-                            _searchTopResult.value = youtubeResult.topResult
+                            _searchTopResult.value = resolveSearchTopResult(
+                                youtubeResult.topResult,
+                                _searchResultsSongs.value,
+                            )
                             _isLoading.value = false
                             warmTopResults(_searchResultsSongs.value)
                         }
@@ -678,7 +813,7 @@ class OnlineSearchViewModel @Inject constructor(
                 _searchResultsSongs.value = rankedResult.songs
                 _searchResultsAlbums.value = rankedResult.albums
                 _searchResultsArtists.value = rankedResult.artists
-                _searchTopResult.value = rankedResult.topResult
+                _searchTopResult.value = resolveSearchTopResult(rankedResult.topResult, rankedResult.songs)
                 warmTopResults(_searchResultsSongs.value)
                 loadSuggestions(trimmed)
             } catch (cancelled: CancellationException) {
@@ -738,7 +873,8 @@ class OnlineSearchViewModel @Inject constructor(
     ): List<Song> {
         val normalizedQuery = query.trim().lowercase()
         val tokens = normalizedQuery.split(Regex("\\s+")).filter { it.length > 1 }
-        return songs.filter(::isDisplayableMusicSong).distinctBy { it.id }
+        return songs.filter { isDisplayableMusicSong(it, normalizedQuery) }.distinctBy { it.id }
+            .distinctByTrack()
             .mapNotNull { song ->
                 val title = song.title.lowercase()
                 val artist = song.artist.lowercase()
@@ -763,9 +899,12 @@ class OnlineSearchViewModel @Inject constructor(
                     title.contains(normalizedQuery) -> 4
                     else -> 5
                 }
-                song to tier
+                // Tie-break on how much of the query the row actually matches. Searching
+                // "295 Sidhu Moose Wala" should not leave the real "295" behind a same-numbered
+                // re-upload, and both land in tier 5 because the title alone is just "295".
+                Triple(song, tier, covered)
             }
-            .sortedBy { it.second }
+            .sortedWith(compareBy({ it.second }, { -it.third }))
             .map { it.first }
     }
 
@@ -846,13 +985,48 @@ class OnlineSearchViewModel @Inject constructor(
             ?: ranked.take(8)
     }
 
-    private fun isDisplayableMusicSong(song: Song): Boolean {
-        val metadata = "${song.title} ${song.artist} ${song.album}".lowercase()
-        val nonMusicTerms = listOf(
-            "podcast", "episode", "episodes", "audiobook", "audio book",
-            "interview", "talk show", "press conference", "keynote", "news"
+    /**
+     * Keeps only rows that are the real recording, and never a video upload.
+     *
+     * [query] is the user's own search text, so an explicit "lofi" / "instrumental" request still
+     * works while a song search cannot surface a slowed/reverb/8D copy of someone else's upload.
+     */
+    private fun isDisplayableMusicSong(song: Song, query: String = ""): Boolean =
+        isRealSongEntry(song, query)
+
+    /**
+     * Chooses the card shown above the results.
+     *
+     * YouTube Music happily returns a *video* as the "top result" for a song query, and that entry
+     * usually carries no playable seed at all, so the hero row looked like a song but did nothing.
+     * Whenever that happens the best real song becomes the hero instead.
+     */
+    private fun resolveSearchTopResult(
+        providerTop: YouTubeTopResult?,
+        songs: List<Song>,
+    ): YouTubeTopResult? {
+        val videoTop = providerTop != null &&
+            (providerTop.typeLabel.equals("Video", ignoreCase = true) ||
+                providerTop.pageType == "MUSIC_PAGE_TYPE_VIDEO")
+
+        if (providerTop != null && !videoTop) {
+            val openable = providerTop.representsArtist || providerTop.representsAlbum
+            val playable = providerTop.seedSong?.let { isDisplayableMusicSong(it) } == true
+            if (openable || playable) return providerTop
+        }
+
+        val bestSong = songs.firstOrNull()
+            ?: return if (videoTop) null else providerTop
+
+        return YouTubeTopResult(
+            typeLabel = "Song",
+            title = bestSong.title,
+            subtitle = bestSong.artist,
+            thumbnailUrl = bestSong.albumArtUriString,
+            browseId = "",
+            pageType = "",
+            seedSongs = listOf(bestSong),
         )
-        return song.title.isNotBlank() && song.artist.isNotBlank() && nonMusicTerms.none(metadata::contains)
     }
 
     private suspend fun rankForInterests(songs: List<Song>, interests: List<String>): List<Song> {

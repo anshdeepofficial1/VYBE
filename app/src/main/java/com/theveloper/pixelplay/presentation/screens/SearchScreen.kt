@@ -262,6 +262,7 @@ fun SearchScreen(
     val selectedSongForInfo by playerViewModel.selectedSongForInfo.collectAsStateWithLifecycle()
     var showSongInfoBottomSheet by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val searchInputFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
@@ -461,7 +462,8 @@ fun SearchScreen(
                     searchQuery = suggestion
                     playerViewModel.updateSearchQuery(suggestion)
                     playerViewModel.onSearchQuerySubmitted(suggestion)
-                    // keyboardController?.hide()
+                    keyboardController?.hide()
+                    focusManager.clearFocus(force = true)
                 }.padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -696,6 +698,11 @@ fun SearchScreen(
                                         searchQuery = searchQuery,
                                         playerViewModel = playerViewModel,
                                         onItemSelected = {
+                                            // Tapping any result ends the search interaction, so
+                                            // the keyboard has to come down; it used to stay over
+                                            // the player for the whole song.
+                                            keyboardController?.hide()
+                                            focusManager.clearFocus(force = true)
                                             if (searchQuery.isNotBlank()) {
                                                 playerViewModel.onSearchQuerySubmitted(searchQuery)
                                             }
@@ -1081,7 +1088,7 @@ private fun SearchDiscoveryFeed(
                         items(songs, key = { "${title}_${it.id}" }) { song ->
                             Card(
                                 modifier = Modifier.width(148.dp).combinedClickable(
-                                    onClick = { playerViewModel.playSongs(songs, song, title) },
+                                    onClick = { playerViewModel.playBrowseSong(song, songs, title) },
                                     onLongClick = { playerViewModel.selectSongForInfo(song) },
                                 ),
                                 shape = RoundedCornerShape(16.dp),

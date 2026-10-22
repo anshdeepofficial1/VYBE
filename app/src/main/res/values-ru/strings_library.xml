@@ -514,7 +514,7 @@
     <string name="album_detail_id_not_found">ID альбома не найден</string>
     <string name="album_detail_error_loading_album">Ошибка загрузки данных альбома: %s</string>
     <string name="album_detail_not_found">Альбом не найден</string>
-
+    <string name="song_album_navigation_unavailable">У этой песни нет альбома или плейлиста</string>
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">Недопустимый ID исполнителя</string>
     <string name="artist_detail_id_not_found">ID исполнителя не найден</string>

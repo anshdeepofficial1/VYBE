@@ -225,7 +225,8 @@ class DualPlayerEngine @Inject constructor(
     private val telegramCacheManager: com.theveloper.pixelplay.data.telegram.TelegramCacheManager,
     private val onlineMusicRepository: com.theveloper.pixelplay.data.repository.OnlineMusicRepository,
     private val connectivityStateHolder: com.theveloper.pixelplay.presentation.viewmodel.ConnectivityStateHolder,
-    private val playbackRecentCacheManager: com.theveloper.pixelplay.data.cache.PlaybackRecentCacheManager
+    private val playbackRecentCacheManager: com.theveloper.pixelplay.data.cache.PlaybackRecentCacheManager,
+    private val spectrumBus: SpectrumBus
 ) {
     private companion object {
         private const val AUDIO_OFFLOAD_STALL_FALLBACK_MS = 4_000L
@@ -1219,6 +1220,10 @@ class DualPlayerEngine @Inject constructor(
                             SilenceSkippingAudioProcessor().apply {
                                 setEnabled(skipSilenceEnabled)
                             },
+                            // Last in the chain so the visualiser sees exactly what is being sent
+                            // to the device. Pure pass-through: it mirrors the buffer through and
+                            // only reads a copy of it, so it cannot alter playback.
+                            SpectrumAudioProcessor(spectrumBus),
                         )
                     )
                     .build()
@@ -1399,6 +1404,21 @@ class DualPlayerEngine @Inject constructor(
         if (skipSilenceEnabled == enabled) return
         skipSilenceEnabled = enabled
         rebuildPlayersPreservingMasterState("Skip silence set to $enabled")
+    }
+
+    /**
+     * Stable audio mode: force the non-offload audio pipeline. See
+     * [com.theveloper.pixelplay.data.preferences.UserPreferencesRepository.disableAudioOffloadFlow].
+     */
+    fun setStableAudioMode(enabled: Boolean) {
+        val desiredOffload = !enabled
+        if (audioOffloadEnabled == desiredOffload) return
+        if (!desiredOffload) {
+            disableAudioOffloadForSession("Stable audio mode enabled")
+        } else {
+            audioOffloadEnabled = true
+            rebuildPlayersPreservingMasterState("Stable audio mode disabled")
+        }
     }
 
     suspend fun resolveCloudUri(uri: Uri): Uri = withContext(Dispatchers.IO) {

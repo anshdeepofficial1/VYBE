@@ -106,8 +106,21 @@ class YouTubeMusicAccountApi @Inject constructor(
             ?: sha1("$accountName|${accountAvatarUrl?.substringBefore('=')}")
 
         val playlistIndex = fetchAllBrowsePages(session, "FEmusic_liked_playlists")
-        val remotePlaylists = parsePlaylists(playlistIndex)
+        // The library landing page also carries the playlists YouTube Music generated for the
+        // listener ("My Mix", "Mixed for you", recent activity). Reading only
+        // FEmusic_liked_playlists skipped those entirely, which is why the Playlists tab only ever
+        // showed playlists the user had created or saved themselves.
+        val landingPlaylists = runCatching {
+            parsePlaylists(fetchAllBrowsePages(session, "FEmusic_library_landing"))
+        }.getOrDefault(emptyList())
+        val remotePlaylists = (parsePlaylists(playlistIndex) + landingPlaylists)
             .filterNot { isSettingsBackupPlaylist(it.name) }
+            // "LM" is Liked Music; it is imported separately as liked songs.
+            .filterNot { it.id == "LM" }
+            .distinctBy { it.id }
+            // Each entry costs a browse round trip to read its tracks; a very large library must
+            // not turn a background sync into minutes of requests.
+            .take(40)
         val playlists = remotePlaylists.map { playlist ->
             playlist to runCatching {
                 fetchAllBrowsePages(session, "VL${playlist.id}").let(::parseTracks)
@@ -414,13 +427,14 @@ class YouTubeMusicAccountApi @Inject constructor(
             val artist = subtitle.firstOrNull { run ->
                 run.second?.startsWith("UC") == true || run.second?.startsWith("MPLA") == true
             }?.first ?: subtitle.firstOrNull()?.first.orEmpty()
-            val album = subtitle.firstOrNull { it.second?.startsWith("MPRE") == true }?.first
-                ?: "YouTube Music"
+            val album = subtitle.firstOrNull { it.second?.startsWith("MPRE") == true }?.first.orEmpty()
             val durationText = collectRunTexts(renderer).lastOrNull { DURATION_REGEX.matches(it) }
             YouTubeTrack(
                 videoId = videoId,
                 title = title,
-                artist = artist.ifBlank { "YouTube Music" },
+                // A blank credit resolves to the shared "Unknown Artist" display label in the
+                // Song model; it must never read as the platform name.
+                artist = artist,
                 album = album,
                 durationSeconds = parseDuration(durationText),
                 thumbnailUrl = findLargestThumbnail(renderer),

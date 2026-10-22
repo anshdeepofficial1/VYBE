@@ -84,6 +84,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -106,6 +107,10 @@ import coil.compose.AsyncImage
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -145,6 +150,7 @@ import com.theveloper.pixelplay.data.diagnostics.AdvancedPerformanceDiagnostics
 import com.theveloper.pixelplay.data.model.Artist
 import com.theveloper.pixelplay.data.model.Song
 import com.theveloper.pixelplay.data.preferences.AlbumArtQuality
+import com.theveloper.pixelplay.data.preferences.AlbumArtShape
 import com.theveloper.pixelplay.data.preferences.CarouselStyle
 import com.theveloper.pixelplay.data.preferences.FullPlayerLoadingTweaks
 import com.theveloper.pixelplay.presentation.components.AlbumCarouselSection
@@ -159,6 +165,7 @@ import com.theveloper.pixelplay.presentation.viewmodel.LyricsSearchUiState
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerSheetState
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixelplay.ui.theme.GoogleSansRounded
+import com.theveloper.pixelplay.ui.theme.LocalImmersiveGlass
 import com.theveloper.pixelplay.utils.AudioMetaUtils.mimeTypeToFormat
 import com.theveloper.pixelplay.utils.LyricsImportFailureReason
 import com.theveloper.pixelplay.utils.LyricsImportSecurity
@@ -279,6 +286,12 @@ fun FullPlayerContent(
     var showTimerBottomSheet by remember { mutableStateOf(false) }
 
     val isTimerActive by playerViewModel.activeTimerValueDisplay.collectAsStateWithLifecycle()
+
+    // Read straight from the bus (no collection here), so a playing song only ever invalidates the
+    // bars themselves and never this composable.
+    val musicVisualizerEnabled by playerViewModel.musicVisualizerEnabled
+        .collectAsStateWithLifecycle()
+    val spectrumBands = playerViewModel.spectrum
     
     val lyricsSearchUiState by playerViewModel.lyricsSearchUiState.collectAsStateWithLifecycle()
 
@@ -289,8 +302,10 @@ fun FullPlayerContent(
     val currentSongArtists = fullPlayerSlice.currentSongArtists
     val lyricsSyncOffset = fullPlayerSlice.lyricsSyncOffset
     val albumArtQuality = fullPlayerSlice.albumArtQuality
-    val immersiveArtworkEnabled = fullPlayerSlice.immersiveArtworkEnabled
+    val immersiveArtworkEnabled =
+        fullPlayerSlice.immersiveArtworkEnabled || LocalImmersiveGlass.current
     val animatedArtworkEnabled by playerViewModel.animatedArtworkEnabled.collectAsStateWithLifecycle()
+    val albumArtShape by playerViewModel.albumArtShape.collectAsStateWithLifecycle()
     val playbackAudioMetadata = fullPlayerSlice.audioMetadata
     val showPlayerFileInfo = fullPlayerSlice.showPlayerFileInfo
     val immersiveLyricsEnabled = fullPlayerSlice.immersiveLyricsEnabled
@@ -444,6 +459,15 @@ fun FullPlayerContent(
     val onSongMetadataArtistClick = {
         if (currentSongArtists.size > 1) {
             showArtistPicker = true
+        } else if (song.id.startsWith("yt_")) {
+            // Library artists are an OFFLINE catalogue; a streamed track's artist must open
+            // the YouTube Music profile, not the local row where this song never appears.
+            // Prefer the credit the provider itself linked, else resolve the name remotely.
+            val linkedRef = song.artists.firstOrNull { !it.remoteBrowseId.isNullOrBlank() }
+            val target = linkedRef?.let { ref ->
+                Artist(id = 0L, name = ref.name, songCount = 0, remoteBrowseId = ref.remoteBrowseId)
+            } ?: Artist(id = 0L, name = song.displayArtist, songCount = 0)
+            playerViewModel.triggerArtistNavigationFromPlayer(target)
         } else {
             currentSongArtists.firstOrNull()?.let(playerViewModel::triggerArtistNavigationFromPlayer)
                 ?: playerViewModel.triggerArtistNavigationFromPlayer(
@@ -562,6 +586,7 @@ fun FullPlayerContent(
             albumArtQuality = albumArtQuality,
             immersiveArtworkEnabled = immersiveArtworkEnabled,
             animatedArtworkEnabled = animatedArtworkEnabled,
+            albumArtShape = albumArtShape,
             requestedScrollIndex = pendingCarouselIndex,
             onSongSelected = onAlbumSongSelected,
             onAlbumClick = {
@@ -595,7 +620,9 @@ fun FullPlayerContent(
             playerOnBaseColor = playerOnBaseColor,
             allowRealtimeUpdates = allowRealtimeUpdates,
             isSheetDragGestureActive = isSheetDragGestureActive,
-            loadingTweaks = loadingTweaks
+            loadingTweaks = loadingTweaks,
+            showVisualizer = musicVisualizerEnabled,
+            spectrumBands = { spectrumBands.value }
         )
     }
 
@@ -1168,6 +1195,7 @@ private fun FullPlayerAlbumCoverSection(
     albumArtQuality: AlbumArtQuality,
     immersiveArtworkEnabled: Boolean,
     animatedArtworkEnabled: Boolean,
+    albumArtShape: AlbumArtShape,
     requestedScrollIndex: Int?,
     onSongSelected: (Song, Int) -> Unit,
     onAlbumClick: (Song) -> Unit,
@@ -1182,6 +1210,13 @@ private fun FullPlayerAlbumCoverSection(
     val videoQualityHeight by playerViewModel.videoQualityHeight.collectAsStateWithLifecycle()
     var showFullscreenVideo by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(song.id) { playerViewModel.resetVideoModeForTrackChange() }
+    // Rotating the phone is the gesture most people reach for to watch a video, so treat landscape
+    // as a request for the fullscreen player instead of leaving them in a portrait card.
+    val isLandscapeNow =
+        LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    LaunchedEffect(isLandscapeNow, isVideoMode) {
+        if (isVideoMode && isLandscapeNow) showFullscreenVideo = true
+    }
     val shouldDelay = loadingTweaks.delayAll || loadingTweaks.delayAlbumCarousel
     val shouldApplyPausedScale = !isPlayingProvider() && !playWhenReadyProvider()
     val albumArtScale by animateFloatAsState(
@@ -1268,19 +1303,24 @@ private fun FullPlayerAlbumCoverSection(
                             .fillMaxWidth()
                     )
                 } else if (videoVisible) {
-                    AndroidView(
-                        factory = { context ->
-                            PlayerView(context).apply {
-                                useController = false
-                                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                setShutterBackgroundColor(android.graphics.Color.BLACK)
-                                playerViewModel.attachInlineVideoView(this)
-                            }
-                        },
-                        update = { playerViewModel.attachInlineVideoView(it) },
-                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp)),
-                        onRelease = { playerViewModel.detachInlineVideoView(it) },
-                    )
+                    // Recreated when fullscreen closes: an AndroidView that keeps its instance
+                    // after the fullscreen PlayerView released the surface stayed black, because
+                    // the inline view never re-attached itself to the player.
+                    key(showFullscreenVideo) {
+                        AndroidView(
+                            factory = { context ->
+                                PlayerView(context).apply {
+                                    useController = false
+                                    resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                    setShutterBackgroundColor(android.graphics.Color.BLACK)
+                                    playerViewModel.attachInlineVideoView(this)
+                                }
+                            },
+                            update = { playerViewModel.attachInlineVideoView(it) },
+                            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp)),
+                            onRelease = { playerViewModel.detachInlineVideoView(it) },
+                        )
+                    }
                 } else {
                     AlbumCarouselSection(
                         currentSong = song,
@@ -1305,25 +1345,58 @@ private fun FullPlayerAlbumCoverSection(
                                     scaleY *= cinematicScale
                                 }
                             },
-                        albumArtQuality = albumArtQuality
+                        albumArtQuality = albumArtQuality,
+                        albumArtShape = albumArtShape,
+                        isPlayingProvider = isPlayingProvider
                     )
                 }
             }
                 if (song.isMusicVideo && !showInlineLyrics) {
+                    // Compact translucent pill instead of a solid rectangle. A flat surface block
+                    // sitting on top of immersive artwork read as a cheap overlay stuck onto the
+                    // cover, especially right after opening a fresh release.
                     Surface(
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 10.dp),
-                        shape = RoundedCornerShape(22.dp),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 14.dp),
+                        shape = RoundedCornerShape(999.dp),
+                        color = if (immersiveArtworkEnabled) {
+                            Color.Black.copy(alpha = 0.34f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.72f)
+                        },
+                        contentColor = if (immersiveArtworkEnabled) {
+                            Color.White
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(onClick = { playerViewModel.setVideoMode(false) }) {
-                                Text("Song", fontWeight = if (!isVideoMode) FontWeight.Bold else FontWeight.Normal)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 2.dp),
+                        ) {
+                            TextButton(
+                                onClick = { playerViewModel.setVideoMode(false) },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            ) {
+                                Text(
+                                    "Song",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (!isVideoMode) FontWeight.Bold else FontWeight.Normal,
+                                )
                             }
-                            TextButton(onClick = { playerViewModel.setVideoMode(true) }) {
+                            TextButton(
+                                onClick = { playerViewModel.setVideoMode(true) },
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                            ) {
                                 if (isVideoLoading) {
-                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                                 } else {
-                                    Text("Video", fontWeight = if (isVideoMode) FontWeight.Bold else FontWeight.Normal)
+                                    Text(
+                                        "Video",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (isVideoMode) FontWeight.Bold else FontWeight.Normal,
+                                    )
                                 }
                             }
                         }
@@ -1357,18 +1430,34 @@ private fun FullPlayerAlbumCoverSection(
 
     if (showFullscreenVideo && isVideoMode) {
         val activity = LocalContext.current as? android.app.Activity
+        val view = LocalView.current
         DisposableEffect(activity) {
             val previousOrientation = activity?.requestedOrientation
-            activity?.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            // LANDSCAPE rather than SENSOR_LANDSCAPE: with the sensor variant a device lying flat
+            // reports no orientation, so the dialog opened but never actually rotated.
+            activity?.requestedOrientation =
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            val window = activity?.window
+            val insetsController = window?.let { WindowCompat.getInsetsController(it, view) }
+            insetsController?.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
             onDispose {
+                insetsController?.show(WindowInsetsCompat.Type.systemBars())
                 if (activity != null && previousOrientation != null) {
                     activity.requestedOrientation = previousOrientation
+                } else {
+                    activity?.requestedOrientation =
+                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 }
             }
         }
         Dialog(
             onDismissRequest = { showFullscreenVideo = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false),
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
         ) {
             Box(Modifier.fillMaxSize().background(Color.Black)) {
                 AndroidView(
@@ -1577,7 +1666,9 @@ private fun FullPlayerProgressSection(
     playerOnBaseColor: Color,
     allowRealtimeUpdates: Boolean,
     isSheetDragGestureActive: Boolean,
-    loadingTweaks: FullPlayerLoadingTweaks
+    loadingTweaks: FullPlayerLoadingTweaks,
+    showVisualizer: Boolean,
+    spectrumBands: () -> FloatArray
 ) {
     val isMetadataForCurrentSong = playbackMetadataMediaId == song.id
     val audioMimeType = if (isMetadataForCurrentSong) {
@@ -1596,27 +1687,39 @@ private fun FullPlayerProgressSection(
         song.sampleRate
     }
 
-    PlayerProgressBarSection(
-        songId = song.id,
-        currentPositionProvider = currentPositionProvider,
-        totalDurationValue = totalDurationValue,
-        songDurationHintMs = song.duration,
-        audioMimeType = audioMimeType,
-        audioBitrate = audioBitrate,
-        audioSampleRate = audioSampleRate,
-        showAudioFileInfo = showPlayerFileInfo,
-        onSeek = onSeek,
-        expansionFractionProvider = expansionFractionProvider,
-        isPlayingProvider = isPlayingProvider,
-        currentSheetState = currentSheetState,
-        activeTrackColor = progressActiveColor,
-        inactiveTrackColor = playerOnBaseColor.copy(alpha = 0.2f),
-        thumbColor = progressActiveColor,
-        timeTextColor = playerOnBaseColor,
-        allowRealtimeUpdates = allowRealtimeUpdates,
-        isSheetDragGestureActive = isSheetDragGestureActive,
-        loadingTweaks = loadingTweaks
-    )
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (showVisualizer) {
+            SpectrumBars(
+                bands = spectrumBands,
+                isPlaying = isPlayingProvider(),
+                // The player's own text colour, so the bars always match the theme the sheet is
+                // currently painted in instead of introducing a second accent.
+                color = playerOnBaseColor.copy(alpha = 0.92f),
+                modifier = Modifier.padding(bottom = 12.dp, start = 2.dp, end = 2.dp)
+            )
+        }
+        PlayerProgressBarSection(
+            songId = song.id,
+            currentPositionProvider = currentPositionProvider,
+            totalDurationValue = totalDurationValue,
+            songDurationHintMs = song.duration,
+            audioMimeType = audioMimeType,
+            audioBitrate = audioBitrate,
+            audioSampleRate = audioSampleRate,
+            showAudioFileInfo = showPlayerFileInfo,
+            onSeek = onSeek,
+            expansionFractionProvider = expansionFractionProvider,
+            isPlayingProvider = isPlayingProvider,
+            currentSheetState = currentSheetState,
+            activeTrackColor = progressActiveColor,
+            inactiveTrackColor = playerOnBaseColor.copy(alpha = 0.2f),
+            thumbColor = progressActiveColor,
+            timeTextColor = playerOnBaseColor,
+            allowRealtimeUpdates = allowRealtimeUpdates,
+            isSheetDragGestureActive = isSheetDragGestureActive,
+            loadingTweaks = loadingTweaks
+        )
+    }
 }
 
 private fun resolveQueueIndex(

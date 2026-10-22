@@ -157,6 +157,8 @@ class MusicService : MediaLibraryService() {
     @Inject
     lateinit var userPreferencesRepository: UserPreferencesRepository
     @Inject
+    lateinit var spectrumBus: com.theveloper.pixelplay.data.service.player.SpectrumBus
+    @Inject
     lateinit var equalizerPreferencesRepository: EqualizerPreferencesRepository
     @Inject
     lateinit var themePreferencesRepository: ThemePreferencesRepository
@@ -551,6 +553,14 @@ class MusicService : MediaLibraryService() {
         }
 
         serviceScope.launch {
+            userPreferencesRepository.musicVisualizerEnabledFlow.collect { enabled ->
+                // Only the analyser is switched off; the audio processor stays in the chain and
+                // keeps mirroring the buffer, so playback is identical either way.
+                spectrumBus.setEnabled(enabled)
+            }
+        }
+
+        serviceScope.launch {
             userPreferencesRepository.smartEqEnabledFlow.collect { smartEqEnabled = it }
         }
 
@@ -565,6 +575,12 @@ class MusicService : MediaLibraryService() {
         serviceScope.launch {
             userPreferencesRepository.skipSilenceEnabledFlow.collect { enabled ->
                 engine.setSkipSilence(enabled)
+            }
+        }
+
+        serviceScope.launch {
+            userPreferencesRepository.disableAudioOffloadFlow.collect { enabled ->
+                engine.setStableAudioMode(enabled)
             }
         }
 

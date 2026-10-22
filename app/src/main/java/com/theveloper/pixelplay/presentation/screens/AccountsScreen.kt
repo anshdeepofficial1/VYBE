@@ -922,9 +922,13 @@ private fun openService(
             Toast.makeText(context, context.getString(R.string.accounts_google_drive_soon), Toast.LENGTH_SHORT).show()
         }
         ExternalServiceAccount.YOUTUBE_MUSIC -> {
+            // One step: skip the read-only "Connect YouTube Music" gate the login activity
+            // used to show, so tapping Connect here goes straight to the Google sign-in web
+            // view - the same behaviour as the first-run prompt on Home.
             safeStartActivity(
                 context = context,
                 intent = Intent(context, YouTubeLoginActivity::class.java)
+                    .putExtra(YouTubeLoginActivity.EXTRA_AUTO_START_SIGN_IN, true)
             )
         }
         ExternalServiceAccount.SPOTIFY -> {

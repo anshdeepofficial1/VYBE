@@ -1,10 +1,16 @@
 package com.theveloper.pixelplay.presentation.components.player
 
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -256,6 +262,29 @@ private fun MorphingPlayPauseIcon(
     size: Dp,
     motionScheme: MotionScheme
 ) {
+    // Two very light motions, borrowed from the transport control in Echo Music:
+    //  1. a spring "pop" on every play/pause toggle, so the tap has physical feedback;
+    //  2. a slow breathing scale while music is playing, so the control never looks frozen.
+    val pop = remember { Animatable(1f) }
+    LaunchedEffect(isPlaying) {
+        pop.snapTo(0.84f)
+        pop.animateTo(
+            targetValue = 1f,
+            animationSpec = spring(dampingRatio = 0.42f, stiffness = androidx.compose.animation.core.Spring.StiffnessMedium),
+        )
+    }
+
+    val breathe = rememberInfiniteTransition(label = "playPauseBreathe")
+    val breatheScale by breathe.animateFloat(
+        initialValue = 1f,
+        targetValue = if (isPlaying) 1.045f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "playPauseBreatheScale",
+    )
+
     Crossfade(
         targetState = isPlaying,
         animationSpec = motionScheme.fastEffectsSpec(),
@@ -265,7 +294,13 @@ private fun MorphingPlayPauseIcon(
             imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
             contentDescription = if (playing) stringResource(R.string.common_pause) else stringResource(R.string.common_play),
             tint = tint,
-            modifier = Modifier.size(size)
+            modifier = Modifier
+                .size(size)
+                .graphicsLayer {
+                    val combined = pop.value * breatheScale
+                    scaleX = combined
+                    scaleY = combined
+                }
         )
     }
 }

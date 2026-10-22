@@ -1,19 +1,26 @@
 package com.theveloper.pixelplay.presentation.components
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.*
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -29,6 +36,7 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.coroutines.flow.first
 
 import com.theveloper.pixelplay.data.preferences.AlbumArtQuality
+import com.theveloper.pixelplay.data.preferences.AlbumArtShape
 
 // ====== TIPOS/STATE DEL CARRUSEL (wrapper para mantener compatibilidad) ======
 
@@ -54,9 +62,29 @@ fun AlbumCarouselSection(
     modifier: Modifier = Modifier,
     carouselStyle: String = CarouselStyle.NO_PEEK,
     itemSpacing: Dp = 8.dp,
-    albumArtQuality: AlbumArtQuality = AlbumArtQuality.HIGH
+    albumArtQuality: AlbumArtQuality = AlbumArtQuality.HIGH,
+    albumArtShape: AlbumArtShape = AlbumArtShape.ROUNDED,
+    isPlayingProvider: () -> Boolean = { false },
 ) {
     if (queue.isEmpty()) return
+
+    // The disc turns only while audio is actually playing, and stops on the angle it reached, so a
+    // pause reads as a record that stopped instead of one that jumped back to twelve o'clock.
+    val discRotation = remember { Animatable(0f) }
+    val discSpinning = albumArtShape == AlbumArtShape.DISC && isPlayingProvider()
+    LaunchedEffect(discSpinning) {
+        if (!discSpinning) {
+            discRotation.stop()
+            return@LaunchedEffect
+        }
+        while (true) {
+            discRotation.animateTo(
+                targetValue = 360f,
+                animationSpec = tween(durationMillis = 9_000, easing = LinearEasing),
+            )
+            discRotation.snapTo(0f)
+        }
+    }
 
     // Mantiene compatibilidad con tu llamada actual
     val initialIndex = remember(currentSong?.id, currentMediaItemIndex, queue) {
@@ -189,6 +217,14 @@ fun AlbumCarouselSection(
 
     val corner = 18.dp//lerp(36.dp, 15.dp, expansionFraction.coerceIn(0f, 1f))
 
+    // The carousel clips every item with one radius, so a square cover is simply radius 0. The
+    // disc look is clipped to a circle by the item content instead, which keeps it correct for
+    // every carousel style (no-peek, one-peek, two-peek).
+    val itemCornerRadius = when (albumArtShape) {
+        AlbumArtShape.SQUARE -> 0.dp
+        else -> corner
+    }
+
     BoxWithConstraints(modifier = modifier) {
         val availableWidth = this.maxWidth
 
@@ -196,7 +232,7 @@ fun AlbumCarouselSection(
             state = carouselState,
             modifier = Modifier.fillMaxSize(), // Fill the space provided by the parent's modifier
             itemSpacing = itemSpacing,
-            itemCornerRadius = corner,
+            itemCornerRadius = itemCornerRadius,
             suppressNoPeekSettleCorrection = requestedTargetIndex != null || programmaticScrollInProgress,
             carouselStyle = if (carouselState.pagerState.pageCount == 1) CarouselStyle.NO_PEEK else carouselStyle, // Handle single-item case
             carouselWidth = availableWidth, // Pass the full width for layout calculations
@@ -219,7 +255,54 @@ fun AlbumCarouselSection(
                 ) { // Enforce 1:1 aspect ratio for the item itself
                     val isOnlineLandscapeArtwork = song.id.startsWith("yt_") ||
                         song.contentUriString.startsWith("yt://")
-                    if (isOnlineLandscapeArtwork) {
+                    if (albumArtShape == AlbumArtShape.DISC) {
+                        // Vinyl/CD presentation: the cover becomes the record itself, with two
+                        // faint groove rings and a spindle hole so it reads as a disc instead of a
+                        // circle-cropped rectangle.
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .graphicsLayer { rotationZ = discRotation.value },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize(0.94f)
+                                    .aspectRatio(1f)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF0B0B0D)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                OptimizedAlbumArt(
+                                    uri = song.albumArtUriString,
+                                    title = song.title,
+                                    modifier = Modifier.fillMaxSize(),
+                                    targetSize = targetSize,
+                                    contentScale = ContentScale.Crop,
+                                    placeholderModel = if (song.albumArtUriString?.startsWith("telegram_art") == true) {
+                                        "${song.albumArtUriString}?quality=thumb"
+                                    } else null
+                                )
+                                Box(
+                                    Modifier
+                                        .fillMaxSize()
+                                        .border(2.dp, Color.White.copy(alpha = 0.10f), CircleShape)
+                                )
+                                Box(
+                                    Modifier
+                                        .fillMaxSize(0.84f)
+                                        .border(1.dp, Color.White.copy(alpha = 0.07f), CircleShape)
+                                )
+                                Box(
+                                    Modifier
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF101013))
+                                        .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape)
+                                )
+                            }
+                        }
+                    } else if (isOnlineLandscapeArtwork) {
                         Box(Modifier.fillMaxSize().clipToBounds()) {
                             OptimizedAlbumArt(
                                 uri = song.albumArtUriString,

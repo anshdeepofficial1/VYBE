@@ -175,11 +175,11 @@ object SettingsSearchIndex {
             keywords = listOf("account", "youtube", "youtube music", "login", "sync", "playlists", "likes", "history")
         ),
         SettingSearchItem(
-            title = "Spotify Account & Playlists",
-            description = "Sign in securely and sync public, private, collaborative and Spotify-made playlists",
-            categoryName = "Accounts",
-            route = Screen.Accounts.route,
-            keywords = listOf("spotify", "login", "sign in", "private playlist", "sync")
+            title = "Spotify Playlists",
+            description = "Import any public Spotify playlist from its link - no account or sign-in needed",
+            categoryName = "Music Management",
+            route = Screen.SettingsCategory.createRoute(SettingsCategory.SPOTIFY.id),
+            keywords = listOf("spotify", "public playlist", "import", "link", "sync")
         ),
 
         // About

@@ -172,6 +172,7 @@ import com.theveloper.pixelplay.data.backup.model.ModuleRestoreDetail
 import com.theveloper.pixelplay.data.backup.model.RestorePlan
 import com.theveloper.pixelplay.data.preferences.AppLanguage
 import com.theveloper.pixelplay.data.preferences.AppThemeMode
+import com.theveloper.pixelplay.data.preferences.AppUiStyle
 import com.theveloper.pixelplay.data.preferences.LogoMode
 import com.theveloper.pixelplay.data.preferences.CollagePattern
 import com.theveloper.pixelplay.data.preferences.CarouselStyle
@@ -229,6 +230,17 @@ fun SettingsCategoryScreen(
     
     // State Collection (Duplicated from SettingsScreen for now to ensure functionality)
     val uiState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+    val musicVisualizerEnabled by settingsViewModel.musicVisualizerEnabled.collectAsStateWithLifecycle()
+    val albumArtShape by settingsViewModel.albumArtShape.collectAsStateWithLifecycle()
+    val appUiStyle by settingsViewModel.appUiStyle.collectAsStateWithLifecycle()
+    val themeGlass by settingsViewModel.themeGlassControls.collectAsStateWithLifecycle()
+    // Sliders preview live while dragged and only write once the finger lifts.
+    var blurStrengthValue by remember(themeGlass.blurStrength) {
+        mutableStateOf(themeGlass.blurStrength.toFloat())
+    }
+    var panelAlphaValue by remember(themeGlass.panelAlpha) {
+        mutableStateOf(themeGlass.panelAlpha.toFloat())
+    }
     val spotifyImportState by settingsViewModel.spotifyImportState.collectAsStateWithLifecycle()
     val notificationActionOne by settingsViewModel.notificationActionOne.collectAsStateWithLifecycle()
     val notificationActionTwo by settingsViewModel.notificationActionTwo.collectAsStateWithLifecycle()
@@ -762,6 +774,126 @@ fun SettingsCategoryScreen(
                                 )
                             }
 
+                            SettingsSubsection(title = "Theme") {
+                                ThemeSelectorItem(
+                                    label = "Theme",
+                                    description = "Material UI, Gesture Blur, Immersive Artwork or Liquid Glass — every detail adjustable below",
+                                    options = AppUiStyle.entries.associate { it.name to it.label },
+                                    selectedKey = appUiStyle.name,
+                                    onSelectionChanged = {
+                                        settingsViewModel.setAppUiStyle(AppUiStyle.fromName(it))
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Style,
+                                            null,
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+                                )
+                                if (appUiStyle.usesGlassBackdrop) {
+                                    SwitchSettingItem(
+                                        title = "Artwork backdrop",
+                                        subtitle = if (appUiStyle == AppUiStyle.GESTURE) {
+                                            "Blur the current cover behind the app while the player opens"
+                                        } else {
+                                            "Blur the current cover behind every screen, bar and sheet"
+                                        },
+                                        checked = themeGlass.backdropArtwork,
+                                        onCheckedChange = {
+                                            settingsViewModel.setThemeBackdropArtwork(it)
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                painterResource(R.drawable.rounded_view_carousel_24),
+                                                null,
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
+                                        }
+                                    )
+                                    SliderSettingsItem(
+                                        label = "Blur strength",
+                                        value = blurStrengthValue,
+                                        valueRange = 0f..100f,
+                                        steps = 19,
+                                        onValueChange = { blurStrengthValue = it },
+                                        onValueChangeFinished = {
+                                            settingsViewModel.setThemeBlurStrength(
+                                                blurStrengthValue.toInt()
+                                            )
+                                        },
+                                        valueText = { "${it.toInt()}%" }
+                                    )
+                                    SliderSettingsItem(
+                                        label = "Panel opacity",
+                                        value = panelAlphaValue,
+                                        valueRange = 10f..100f,
+                                        steps = 17,
+                                        onValueChange = { panelAlphaValue = it },
+                                        onValueChangeFinished = {
+                                            settingsViewModel.setThemePanelAlpha(
+                                                panelAlphaValue.toInt()
+                                            )
+                                        },
+                                        valueText = { "${it.toInt()}%" }
+                                    )
+                                    SwitchSettingItem(
+                                        title = "Glass sheen",
+                                        subtitle = "The soft light falloff across the top of every panel",
+                                        checked = themeGlass.sheen,
+                                        onCheckedChange = { settingsViewModel.setThemeSheen(it) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Outlined.LightMode,
+                                                null,
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
+                                        }
+                                    )
+                                    SwitchSettingItem(
+                                        title = "Edge light",
+                                        subtitle = "The hairline highlight that outlines each panel",
+                                        checked = themeGlass.edgeLight,
+                                        onCheckedChange = {
+                                            settingsViewModel.setThemeEdgeLight(it)
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Outlined.Style,
+                                                null,
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
+                                        }
+                                    )
+                                    SwitchSettingItem(
+                                        title = "Depth shadow",
+                                        subtitle = "The soft shadow that lifts panels off the artwork",
+                                        checked = themeGlass.shadow,
+                                        onCheckedChange = {
+                                            settingsViewModel.setThemeShadow(it)
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Outlined.Info,
+                                                null,
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
+                                        }
+                                    )
+                                } else {
+                                    Text(
+                                        text = "Plain Material surfaces with nothing behind them. " +
+                                            "Pick one of the glass themes to tune blur, transparency, " +
+                                            "sheen and shadow.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                                    )
+                                }
+                            }
+
                             SettingsSubsection(title = stringResource(R.string.settings_now_playing_section)) {
                                 ThemeSelectorItem(
                                     label = stringResource(R.string.settings_player_theme_title),
@@ -780,6 +912,26 @@ fun SettingsCategoryScreen(
                                     checked = uiState.showPlayerFileInfo,
                                     onCheckedChange = { settingsViewModel.setShowPlayerFileInfo(it) },
                                     leadingIcon = { Icon(painterResource(R.drawable.rounded_attach_file_24), null, tint = MaterialTheme.colorScheme.secondary) }
+                                )
+                                SwitchSettingItem(
+                                    title = stringResource(R.string.settings_music_visualizer_title),
+                                    subtitle = stringResource(R.string.settings_music_visualizer_subtitle),
+                                    checked = musicVisualizerEnabled,
+                                    onCheckedChange = { settingsViewModel.setMusicVisualizerEnabled(it) },
+                                    leadingIcon = { Icon(Icons.Outlined.PlayCircle, null, tint = MaterialTheme.colorScheme.secondary) }
+                                )
+                                ThemeSelectorItem(
+                                    label = stringResource(R.string.settings_album_art_shape_title),
+                                    description = stringResource(R.string.settings_album_art_shape_subtitle),
+                                    options = com.theveloper.pixelplay.data.preferences.AlbumArtShape.entries
+                                        .associate { it.name to it.label },
+                                    selectedKey = albumArtShape.name,
+                                    onSelectionChanged = { key ->
+                                        com.theveloper.pixelplay.data.preferences.AlbumArtShape.entries
+                                            .firstOrNull { it.name == key }
+                                            ?.let(settingsViewModel::setAlbumArtShape)
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.Style, null, tint = MaterialTheme.colorScheme.secondary) }
                                 )
                                 SettingsItem(
                                     title = stringResource(R.string.settings_album_art_palette_title),
@@ -801,32 +953,6 @@ fun SettingsCategoryScreen(
                                         leadingIcon = { Icon(painterResource(R.drawable.rounded_view_carousel_24), null, tint = MaterialTheme.colorScheme.secondary) }
                                     )
                                 }
-                                SwitchSettingItem(
-                                    title = stringResource(R.string.settings_immersive_artwork_title),
-                                    subtitle = stringResource(R.string.settings_immersive_artwork_subtitle),
-                                    checked = uiState.immersiveArtworkEnabled,
-                                    onCheckedChange = { settingsViewModel.setImmersiveArtworkEnabled(it) },
-                                    leadingIcon = {
-                                        Icon(
-                                            painterResource(R.drawable.rounded_view_carousel_24),
-                                            null,
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
-                                )
-                                SwitchSettingItem(
-                                    title = "Full App artwork",
-                                    subtitle = "Blur the current cover across every screen, bar and sheet in VYBE for a fully immersive look.",
-                                    checked = uiState.fullAppImmersiveEnabled,
-                                    onCheckedChange = { settingsViewModel.setFullAppImmersiveEnabled(it) },
-                                    leadingIcon = {
-                                        Icon(
-                                            painterResource(R.drawable.rounded_view_carousel_24),
-                                            null,
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
-                                )
                             }
 
                             SettingsSubsection(title = stringResource(R.string.settings_home_collage_section)) {
@@ -1261,6 +1387,13 @@ fun SettingsCategoryScreen(
                                     checked = uiState.skipSilenceEnabled,
                                     onCheckedChange = settingsViewModel::setSkipSilenceEnabled,
                                     leadingIcon = { Icon(painterResource(R.drawable.rounded_skip_next_24), null, tint = MaterialTheme.colorScheme.secondary) }
+                                )
+                                SwitchSettingItem(
+                                    title = "Stable audio mode",
+                                    subtitle = "Use the dependable audio path when a track starts too fast. Slightly higher battery use.",
+                                    checked = uiState.disableAudioOffload,
+                                    onCheckedChange = settingsViewModel::setDisableAudioOffload,
+                                    leadingIcon = { Icon(painterResource(R.drawable.outline_high_quality_24), null, tint = MaterialTheme.colorScheme.secondary) }
                                 )
                                 SwitchSettingItem(
                                     title = stringResource(R.string.settings_persistent_shuffle_title),

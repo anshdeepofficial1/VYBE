@@ -56,10 +56,19 @@ data class Song(
      */
     val displayArtist: String
         get() {
-            if (artists.isNotEmpty()) {
-                return artists.sortedByDescending { it.isPrimary }.joinToString(", ") { it.name }
+            val raw = if (artists.isNotEmpty()) {
+                artists.sortedByDescending { it.isPrimary }.joinToString(", ") { it.name }
+            } else {
+                artist
             }
-            return artist
+            // Auto-generated YouTube Music artist channels are named "<Artist> - Topic". The suffix
+            // is a catalogue implementation detail, not part of anybody's name, so it never reaches
+            // the UI. A plain endsWith keeps this free of per-frame regex allocation.
+            return if (raw.endsWith(" - Topic", ignoreCase = true)) {
+                raw.dropLast(" - Topic".length).trimEnd().ifEmpty { raw }
+            } else {
+                raw
+            }
         }
 
     /**

@@ -135,7 +135,7 @@ android {
         val vybeGitHubOwner = localProperties.getProperty("VYBE_GITHUB_OWNER")
             ?.trim()
             ?.takeIf(String::isNotBlank)
-            ?: "anshdeepofficial"
+            ?: "anshdeepofficial1"
         val vybeGitHubRepo = localProperties.getProperty("VYBE_GITHUB_REPO")
             ?.trim()
             ?.takeIf(String::isNotBlank)

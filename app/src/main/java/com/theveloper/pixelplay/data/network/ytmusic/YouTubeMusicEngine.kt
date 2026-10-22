@@ -383,9 +383,9 @@ class YouTubeMusicEngine @Inject constructor(
         when (node) {
             is JSONObject -> {
                 node.optJSONObject("musicResponsiveListItemRenderer")
-                    ?.let { parseListItem(it, includeOfficialVideos = true) }?.let(tracks::add)
+                    ?.let { parseListItem(it) }?.let(tracks::add)
                 node.optJSONObject("musicTwoRowItemRenderer")
-                    ?.let { parseListItem(it, includeOfficialVideos = true) }?.let(tracks::add)
+                    ?.let { parseListItem(it) }?.let(tracks::add)
                 node.keys().forEach { collectHomeTracks(node.opt(it), tracks) }
             }
             is JSONArray -> for (index in 0 until node.length()) collectHomeTracks(node.opt(index), tracks)
@@ -1049,15 +1049,26 @@ class YouTubeMusicEngine @Inject constructor(
                 }.awaitAll()
             }
         }
-        datedTracks
+        val filtered = datedTracks
             .filter { track -> NON_MUSIC_KEYWORDS.none { track.title.lowercase().contains(it) } }
-            .filter { track ->
-                if (track.releaseDateEpochMillis <= 0L) return@filter false
-                val date = java.time.Instant.ofEpochMilli(track.releaseDateEpochMillis).atZone(zone).toLocalDate()
-                !date.isBefore(oldestAllowed) && !date.isAfter(today)
-            }
             .distinctBy { it.videoId }
+
+        val inWindow = filtered.filter { track ->
+            if (track.releaseDateEpochMillis <= 0L) return@filter false
+            val date = java.time.Instant.ofEpochMilli(track.releaseDateEpochMillis).atZone(zone).toLocalDate()
+            !date.isBefore(oldestAllowed) && !date.isAfter(today)
+        }.sortedByDescending { it.releaseDateEpochMillis }
+
+        // Unknown publish date means the metadata call failed (usually rate limiting), not that the
+        // release is old: these candidates came from the provider's new-releases shelf or a
+        // month-scoped search. Keeping them means the shelf can never be empty just because one
+        // per-track request was throttled. Genuinely older releases are the last resort only.
+        val undated = filtered.filter { it.releaseDateEpochMillis <= 0L }
+        val inWindowIds = inWindow.map { it.videoId }.toSet()
+        val older = filtered.filter { it.releaseDateEpochMillis > 0L && it.videoId !in inWindowIds }
             .sortedByDescending { it.releaseDateEpochMillis }
+
+        (inWindow + undated + older).take(20)
     }
 
     private fun fetchVideoPublishedDate(videoId: String, region: String): Long {
@@ -1815,7 +1826,7 @@ class YouTubeMusicEngine @Inject constructor(
         artists: MutableList<YouTubeArtist>,
         videos: MutableList<Song>
     ) {
-        parseListItem(item, includeOfficialVideos = true)?.let { track ->
+        parseListItem(item)?.let { track ->
             if (track.resultType == YouTubeMusicEntityType.MUSIC_VIDEO) {
                 videos.add(track.toSong())
             } else {
@@ -1946,11 +1957,22 @@ class YouTubeMusicEngine @Inject constructor(
                 )
             )
         } else if (pageType == "MUSIC_PAGE_TYPE_ALBUM" || browseId.startsWith("MPRE")) {
+            // Subtitle reads "Album • Artist • 2023". The old substringBefore(" • ") promoted
+            // the literal word "Album" (or the album type label) into the artist slot, so
+            // search results credited the row type instead of the performer. Skip type
+            // labels and bare years to reach the real credit.
+            val subtitleArtist = subtitle.split(Regex("[•·]"))
+                .map(String::trim)
+                .firstOrNull {
+                    it.isNotBlank() && it.lowercase() !in RESULT_TYPE_LABELS &&
+                        !Regex("^(19|20)\\d{2}$").matches(it)
+                }
+                .orEmpty()
             albums.add(
                 YouTubeAlbum(
                     browseId = browseId,
                     title = title,
-                    artist = subtitle.substringBefore(" • ").ifBlank { "YouTube Music" },
+                    artist = subtitleArtist,
                     thumbnailUrl = thumb
                 )
             )
@@ -1979,9 +2001,23 @@ class YouTubeMusicEngine @Inject constructor(
 
             val rawTracks = mutableListOf<YouTubeTrack>()
             collectTracksRecursively(root, rawTracks)
-            
-            val rawSongs = rawTracks.filter { it.resultType != YouTubeMusicEntityType.MUSIC_VIDEO }.map { it.toSong() }
-            val rawVideos = rawTracks.filter { it.resultType == YouTubeMusicEntityType.MUSIC_VIDEO }.map { it.toSong() }
+
+            // The artist page's inline rows carry only title + duration, the same shape that
+            // blanked the credit on album tracklists. Every credit-less track belongs to the
+            // artist whose page we are reading, so the header name fills the artist slot and
+            // the strict-artist filter can actually recognise them as this artist's songs.
+            val creditedArtist = artistName.trim().takeIf(String::isNotBlank)
+            fun toCreditedSong(track: YouTubeTrack): Song {
+                val base = track.toSong()
+                val hasCredit = track.artist.isNotBlank() &&
+                    !track.artist.equals("YouTube Music", ignoreCase = true) &&
+                    !DURATION_TEXT_REGEX.matches(track.artist)
+                return if (!hasCredit && creditedArtist != null) base.copy(artist = creditedArtist) else base
+            }
+            val rawSongs = rawTracks.filter { it.resultType != YouTubeMusicEntityType.MUSIC_VIDEO }
+                .mapNotNull { track -> toCreditedSong(track).takeIf { it.id.isNotBlank() } }
+            val rawVideos = rawTracks.filter { it.resultType == YouTubeMusicEntityType.MUSIC_VIDEO }
+                .mapNotNull { track -> toCreditedSong(track).takeIf { it.id.isNotBlank() } }
 
             val cleanName = artistName.trim().lowercase()
             fun isStrictlyThisArtist(s: Song): Boolean {
@@ -2072,8 +2108,19 @@ class YouTubeMusicEngine @Inject constructor(
                 ?: rawTracks.firstNotNullOfOrNull { it.thumbnailUrl?.takeIf(String::isNotBlank) }
 
             rawTracks.forEachIndexed { index, track ->
-                val song = track.toSong().copy(
+                val base = track.toSong()
+                val lacksCredit = base.displayArtist.isBlank() ||
+                    base.displayArtist.equals("Unknown Artist", ignoreCase = true) ||
+                    base.displayArtist.equals("YouTube Music", ignoreCase = true)
+                // Album tracklist rows usually carry only title + duration. The page header
+                // knows the real credit, so the album's own artist fills the song instead
+                // of letting every row on the album screen read "Unknown Artist".
+                val inheritedArtist = resolvedArtist.takeUnless {
+                    it.isBlank() || it.equals("Various Artists", ignoreCase = true)
+                }
+                val song = base.copy(
                     album = resolvedTitle,
+                    artist = if (lacksCredit && inheritedArtist != null) inheritedArtist else base.artist,
                     albumArtUriString = track.thumbnailUrl?.takeIf(String::isNotBlank) ?: coverUrl,
                     trackNumber = index + 1
                 )
@@ -2141,9 +2188,10 @@ class YouTubeMusicEngine @Inject constructor(
             when (node) {
                 is JSONObject -> {
                     val url = node.optString("url").takeIf {
+                        // ytimg.com is YouTube's video-frame CDN - always a 16:9 still of the
+                        // video, never a cover. Only YouTube Music's artwork CDNs qualify.
                         it.contains("googleusercontent.com", true) ||
-                            it.contains("ggpht.com", true) ||
-                            it.contains("ytimg.com", true)
+                            it.contains("ggpht.com", true)
                     }
                     if (url != null) {
                         val area = node.optLong("width", 1L) * node.optLong("height", 1L)
@@ -2451,24 +2499,18 @@ class YouTubeMusicEngine @Inject constructor(
     suspend fun getMoodTracks(moodBrowseId: String, region: String = "IN"): List<YouTubeTrack> = withContext(Dispatchers.IO) {
         val tracks = mutableListOf<YouTubeTrack>()
         val cachedTracks = getCachedMoodTracks(moodBrowseId, region)
+        val moodLabel = moodBrowseId.substringAfterLast('_').let {
+            when (it) {
+                "happy" -> "feel good"
+                "romance" -> "romance"
+                else -> it
+            }
+        }
         try {
             data class MoodEndpoint(val browseId: String, val params: String?)
-            val moodLabel = moodBrowseId.substringAfterLast('_').let {
-                when (it) {
-                    "happy" -> "feel good"
-                    "romance" -> "romance"
-                    else -> it
-                }
-            }
-            // Mood category browse IDs are server-side and are not stable across WEB_REMIX
-            // releases.  Synthetic IDs such as FEmusic_moods_and_genres_workout return 400.
-            // Start with a real music search instead, then cache it so chip switches are
-            // instant on subsequent visits and never leave the Home screen blank.
-            val searchedTracks = search("$moodLabel music", region)
-            if (searchedTracks.isNotEmpty()) {
-                persistMoodTracks(moodBrowseId, region, searchedTracks)
-                return@withContext searchedTracks
-            }
+            // YouTube Music's real mood/category destination is authoritative. A keyword search is
+            // only a fallback when that page returns nothing, because a plain text search happily
+            // returns any upload whose title merely contains the mood word.
             var resolvedEndpoint: MoodEndpoint? = null
             val moodsRoot = executeWebRemixRequest("browse", region) { config ->
                 JSONObject().apply {
@@ -2547,7 +2589,17 @@ class YouTubeMusicEngine @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "getMoodTracks failed for $moodBrowseId: ${e.message}")
         }
-        tracks.distinctBy { it.videoId }
+        val resolved = tracks.distinctBy { it.videoId }
+            .filterNot { it.title.trim().equals(moodLabel, ignoreCase = true) }
+        if (resolved.isNotEmpty()) {
+            persistMoodTracks(moodBrowseId, region, resolved)
+            return@withContext resolved
+        }
+        // Last resort: a plain keyword search, kept after the authoritative browse page so it can
+        // never shadow real mood content.
+        val searchedTracks = search("$moodLabel songs", region)
+            .filterNot { it.title.trim().equals(moodLabel, ignoreCase = true) }
+        searchedTracks
             .also { fresh -> if (fresh.isNotEmpty()) persistMoodTracks(moodBrowseId, region, fresh) }
             .ifEmpty { cachedTracks }
     }
@@ -2598,7 +2650,7 @@ class YouTubeMusicEngine @Inject constructor(
         }
     }
 
-    private fun parseListItem(item: JSONObject, includeOfficialVideos: Boolean = false): YouTubeTrack? {
+    private fun parseListItem(item: JSONObject): YouTubeTrack? {
         var title = ""
         var artist = ""
 
@@ -2615,6 +2667,12 @@ class YouTubeMusicEngine @Inject constructor(
         }
         if (artist.isBlank()) {
             artist = extractMusicArtist(item.optJSONObject("subtitle"))
+        }
+        if (artist.isBlank()) {
+            artist = extractMusicArtist(item.optJSONObject("shortBylineText"))
+        }
+        if (artist.isBlank()) {
+            artist = extractMusicArtist(item.optJSONObject("longBylineText"))
         }
 
         var videoId: String? = null
@@ -2659,19 +2717,25 @@ class YouTubeMusicEngine @Inject constructor(
         }.lowercase()
         if (NON_MUSIC_KEYWORDS.any(metadataText::contains)) return null
 
+        // YouTube Music catalogue only.
+        //
+        // The music shelves also carry ordinary YouTube uploads. Those are the rows whose cover is
+        // a 16:9 video still - a face, a title card, a lyric sheet - and whose audio is frequently
+        // a re-upload rather than the released recording. A row that names a video type is a video,
+        // so it is rejected even for OMV: an official music video still has the wrong artwork and
+        // the wrong edit for a music player. Only catalogue album tracks (ATV) and untyped rows
+        // from the music shelves survive.
         val musicVideoType = findFirstString(item, "musicVideoType")
         val isAlbumTrack = musicVideoType == "MUSIC_VIDEO_TYPE_ATV"
         val isOfficialMusicVideo = musicVideoType == "MUSIC_VIDEO_TYPE_OMV"
-        if (isOfficialMusicVideo && !includeOfficialVideos) return null
+        if (musicVideoType != null && !isAlbumTrack) return null
         // Home Quick Picks rows often omit playlistItemData even though they carry an exact
         // watchEndpoint and normal music flex columns. Requiring playlistItemData discarded the
         // signed-in user's real Quick Picks and made Home fall back to generic chart tracks.
-        val isExplicitMusicTrack = item.has("flexColumns")
-        if (!isAlbumTrack && !isExplicitMusicTrack && !isOfficialMusicVideo) return null
+        if (!isAlbumTrack && !item.has("flexColumns")) return null
 
         val thumbnail = extractThumbnail(item.optJSONObject("thumbnail"))
             ?: extractBestThumbnail(item)
-            ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
 
         val linkedArtists = extractLinkedArtists(item)
         val albumLink = extractLinkedAlbum(item)
@@ -2679,9 +2743,10 @@ class YouTubeMusicEngine @Inject constructor(
         return YouTubeTrack(
             videoId = videoId,
             title = title,
-            artist = linkedArtists.joinToString(", ") { it.name }.ifBlank {
-                artist.ifBlank { "YouTube Music" }
-            },
+            // Never brand a track with the platform name. When a row genuinely carries no
+            // artist, the field stays blank and the shared Song model shows the honest
+            // "Unknown Artist" label instead of saving "YouTube Music" as the artist.
+            artist = linkedArtists.joinToString(", ") { it.name }.ifBlank { artist },
             album = albumLink?.second ?: "YouTube Music",
             durationSeconds = extractDurationSeconds(item),
             thumbnailUrl = thumbnail,

@@ -137,23 +137,67 @@ private fun ColorScheme.asAmoled(): ColorScheme = copy(
 )
 
 /**
- * Makes every surface role translucent so a blurred album artwork layer placed behind the whole
- * app shows through. The screen background is the most transparent role (it is the largest area,
- * so it is what actually reveals the artwork), while cards, sheets and bars keep more opacity so
- * text stays readable and panels still read as elevated surfaces.
+ * Lets a blurred album artwork layer placed behind the whole app show through the screen
+ * background only. Every elevated role (cards, sheets, bars, the bottom navigation bar) stays
+ * effectively solid so panels read as real surfaces instead of see-through glass, and small text
+ * never fights the artwork behind it.
+ *
+ * The artwork is a light source, so the two themes need opposite treatment:
+ *  - Dark: a moderately transparent background keeps the blurred cover clearly visible, while the
+ *    containers stay dark and solid enough to hold white text.
+ *  - Light: a translucent background over a bright cover washes out and loses contrast, so the
+ *    background is only slightly transparent and the containers are almost fully opaque. The
+ *    backdrop is additionally pre-lightened by a stronger scrim in the activity root.
  */
-private fun ColorScheme.asImmersive(): ColorScheme = copy(
-    background = background.copy(alpha = 0.30f),
-    surface = surface.copy(alpha = 0.46f),
-    surfaceVariant = surfaceVariant.copy(alpha = 0.46f),
-    surfaceDim = surfaceDim.copy(alpha = 0.34f),
-    surfaceBright = surfaceBright.copy(alpha = 0.50f),
-    surfaceContainerLowest = surfaceContainerLowest.copy(alpha = 0.42f),
-    surfaceContainerLow = surfaceContainerLow.copy(alpha = 0.48f),
-    surfaceContainer = surfaceContainer.copy(alpha = 0.52f),
-    surfaceContainerHigh = surfaceContainerHigh.copy(alpha = 0.58f),
-    surfaceContainerHighest = surfaceContainerHighest.copy(alpha = 0.64f),
-)
+private fun ColorScheme.asImmersive(
+    dark: Boolean,
+    liquid: Boolean = false,
+    alphaShift: Float = 0f,
+): ColorScheme {
+    // Liquid glass carries less paint than frosted glass: the same stack with a thinner fill so
+    // more of the blurred cover reads through, which is what gives the panels their depth.
+    val liquidDrop = if (liquid) 0.11f else 0.0f
+
+    // The user's "Panel opacity" slider moves the whole stack together, clamped so a panel can
+    // never become invisible or turn back into a solid block.
+    fun Float.glass(): Float = (this - liquidDrop + alphaShift).coerceIn(0.16f, 1f)
+
+    return if (dark) {
+        copy(
+            // The blurred cover is the wallpaper, so the screen background only needs to be a thin
+            // veil. Every alpha in this stack multiplies: a 0.34 veil under the root scrim and the
+            // screen surface left the artwork at a few percent and it read as a flat colour, which
+            // is exactly why the feature looked like it did nothing. Keep the background almost
+            // clear here and let the containers carry the contrast.
+            background = background.copy(alpha = if (liquid) 0.05f else 0.06f),
+            surface = surface.copy(alpha = 0.62f.glass()),
+            surfaceVariant = surfaceVariant.copy(alpha = 0.58f.glass()),
+            surfaceDim = surfaceDim.copy(alpha = 0.52f.glass()),
+            surfaceBright = surfaceBright.copy(alpha = 0.62f.glass()),
+            surfaceContainerLowest = surfaceContainerLowest.copy(alpha = 0.54f.glass()),
+            surfaceContainerLow = surfaceContainerLow.copy(alpha = 0.56f.glass()),
+            surfaceContainer = surfaceContainer.copy(alpha = 0.58f.glass()),
+            surfaceContainerHigh = surfaceContainerHigh.copy(alpha = 0.62f.glass()),
+            surfaceContainerHighest = surfaceContainerHighest.copy(alpha = 0.66f.glass()),
+        )
+    } else {
+        copy(
+            // Light mode cannot be as clear as dark mode without losing text contrast, so the veil
+            // is a little stronger and the root scrim does the legibility work. Still low enough
+            // that the cover's colours stay visible instead of washing out to plain cream.
+            background = background.copy(alpha = if (liquid) 0.08f else 0.10f),
+            surface = surface.copy(alpha = 0.70f.glass()),
+            surfaceVariant = surfaceVariant.copy(alpha = 0.66f.glass()),
+            surfaceDim = surfaceDim.copy(alpha = 0.60f.glass()),
+            surfaceBright = surfaceBright.copy(alpha = 0.74f.glass()),
+            surfaceContainerLowest = surfaceContainerLowest.copy(alpha = 0.62f.glass()),
+            surfaceContainerLow = surfaceContainerLow.copy(alpha = 0.64f.glass()),
+            surfaceContainer = surfaceContainer.copy(alpha = 0.66f.glass()),
+            surfaceContainerHigh = surfaceContainerHigh.copy(alpha = 0.70f.glass()),
+            surfaceContainerHighest = surfaceContainerHighest.copy(alpha = 0.74f.glass()),
+        )
+    }
+}
 
 @Composable
 fun PixelPlayTheme(
@@ -161,6 +205,7 @@ fun PixelPlayTheme(
     amoledTheme: Boolean = false,
     colorSchemePairOverride: ColorSchemePair? = null,
     immersiveArtwork: Boolean = false,
+    glassControls: GlassControls = GlassControls(),
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -189,9 +234,22 @@ fun PixelPlayTheme(
         navigationColor = finalColorScheme.background
     )
 
-    CompositionLocalProvider(LocalPixelPlayDarkTheme provides darkTheme) {
+    CompositionLocalProvider(
+        LocalPixelPlayDarkTheme provides darkTheme,
+        LocalImmersiveGlass provides immersiveArtwork,
+        LocalGlassControls provides glassControls,
+    ) {
         MaterialTheme(
-            colorScheme = if (immersiveArtwork) finalColorScheme.asImmersive() else finalColorScheme,
+            colorScheme = if (immersiveArtwork) {
+                finalColorScheme.asImmersive(
+                    dark = darkTheme,
+                    liquid = glassControls.liquid,
+                    // 0.58 is the shipped default, so this reads as "0 unless the user moved it".
+                    alphaShift = glassControls.panelAlpha - 0.58f,
+                )
+            } else {
+                finalColorScheme
+            },
             typography = Typography,
             shapes = Shapes,
             content = content

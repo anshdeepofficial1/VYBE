@@ -514,7 +514,7 @@
     <string name="album_detail_id_not_found">Albüm kimliği bulunamadı</string>
     <string name="album_detail_error_loading_album">Albüm verileri yüklenirken hata oluştu: %s</string>
     <string name="album_detail_not_found">Albüm bulunamadı</string>
-
+    <string name="song_album_navigation_unavailable">Bu şarkı için albüm veya çalma listesi yok</string>
     <!-- ArtistDetailViewModel -->
     <string name="artist_detail_invalid_id">Geçersiz sanatçı kimliği</string>
     <string name="artist_detail_id_not_found">Sanatçı kimliği bulunamadı</string>

@@ -553,7 +553,16 @@ fun SongInfoBottomSheet(
                                             },
                                             showDownload = (song.id.toLongOrNull() == null),
                                             isDownloaded = isDownloaded,
-                                            onDownloadToggle = { songInfoViewModel.toggleDownload(song) }
+                                            onDownloadToggle = {
+                                                songInfoViewModel.toggleDownload(song)
+                                                // Removing a download must close this sheet, exactly
+                                                // like deleting from device already does. Leaving it
+                                                // open made the row look like nothing happened.
+                                                if (isDownloaded) {
+                                                    removeFromListTrigger()
+                                                    onDismiss()
+                                                }
+                                            }
                                         )
 
                                         TextButton(
