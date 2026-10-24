@@ -6,14 +6,40 @@
 
 **A modern music experience for YouTube Music discovery, local playback, lyrics, downloads, and personal listening.**
 
-[![Latest Release](https://img.shields.io/github/v/release/anshdeepofficial1/VYBE?style=for-the-badge&logo=github&label=Latest)](https://github.com/anshdeepofficial1/VYBE/releases/latest)
-![Downloads](https://img.shields.io/github/downloads/anshdeepofficial1/VYBE/total?style=for-the-badge&logo=github&label=Downloads)
-![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white)
-![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white)
+<!-- README_BADGES_START -->
+<p align="center">
+  <a href="https://github.com/anshdeepofficial1/VYBE/releases/latest"><img src="https://img.shields.io/github/v/release/anshdeepofficial1/VYBE?style=for-the-badge&logo=github&label=Latest%20Release" alt="Latest Release" /></a>
+  <a href="https://github.com/anshdeepofficial1/VYBE/releases"><img src="https://img.shields.io/github/downloads/anshdeepofficial1/VYBE/total?style=for-the-badge&logo=github&label=Total%20Downloads" alt="Total Downloads" /></a>
+  <a href="https://github.com/anshdeepofficial1/VYBE/stargazers"><img src="https://img.shields.io/github/stars/anshdeepofficial1/VYBE?style=for-the-badge&logo=github&label=Stars" alt="GitHub Stars" /></a>
+  <a href="https://github.com/anshdeepofficial1/VYBE/forks"><img src="https://img.shields.io/github/forks/anshdeepofficial1/VYBE?style=for-the-badge&logo=github&label=Forks" alt="GitHub Forks" /></a>
+  <a href="https://github.com/anshdeepofficial1/VYBE/issues"><img src="https://img.shields.io/github/issues/anshdeepofficial1/VYBE?style=for-the-badge&logo=github&label=Issues" alt="Open Issues" /></a>
+  <a href="https://github.com/anshdeepofficial1/VYBE/blob/main/LICENSE"><img src="https://img.shields.io/github/license/anshdeepofficial1/VYBE?style=for-the-badge&label=License" alt="License" /></a>
+</p>
 
-<a href="https://github.com/anshdeepofficial1/VYBE/releases/latest"><img src="https://img.shields.io/badge/Download-Latest%20APK-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="Download latest VYBE APK" /></a>
-<a href="https://github.com/sponsors/anshdeepofficial1"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub" /></a>
-<a href="https://buymeacoffee.com/anshdeepofficial1"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000" alt="Buy Me a Coffee" /></a>
+<p align="center">
+  <img src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android 8.0 and newer" />
+  <img src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin and Jetpack Compose" />
+  <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android platform" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/anshdeepofficial1/VYBE/releases/latest"><img src="https://img.shields.io/badge/Download-Latest%20APK-22C55E?style=for-the-badge&logo=android&logoColor=white" alt="Download latest VYBE APK" /></a>
+  <a href="obtainium://add/https://github.com/anshdeepofficial1/VYBE"><img src="https://img.shields.io/badge/Add%20to-Obtainium-6366F1?style=for-the-badge&logo=android&logoColor=white" alt="Add VYBE to Obtainium" /></a>
+  <a href="https://github.com/sponsors/anshdeepofficial1"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub" /></a>
+  <a href="https://buymeacoffee.com/anshdeepofficial1"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000" alt="Buy Me a Coffee" /></a>
+</p>
+
+<!-- Plain-text fallbacks keep every important destination accessible if an image badge fails to load. -->
+<p align="center">
+  <strong>Quick links:</strong>
+  <a href="https://github.com/anshdeepofficial1/VYBE/releases/latest">Download APK</a> ·
+  <a href="https://github.com/anshdeepofficial1/VYBE/releases">All Releases &amp; Downloads</a> ·
+  <a href="obtainium://add/https://github.com/anshdeepofficial1/VYBE">Add to Obtainium</a> ·
+  <a href="https://github.com/anshdeepofficial1/VYBE/stargazers">Stars</a> ·
+  <a href="https://github.com/anshdeepofficial1/VYBE/issues">Issues</a> ·
+  <a href="https://github.com/sponsors/anshdeepofficial1">Sponsor</a>
+</p>
+<!-- README_BADGES_END -->
 
 </div>
 
