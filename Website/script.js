@@ -9,7 +9,7 @@
 
   const releaseApi = 'https://api.github.com/repos/anshdeepofficial1/VYBE/releases/latest';
   const releaseFallback = 'https://github.com/anshdeepofficial1/VYBE/releases/latest';
-  const defaultVersion = 'v0.9.1';
+  const defaultVersion = 'Latest';
 
   const systemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   const storedTheme = localStorage.getItem('vybe-theme');
@@ -17,7 +17,7 @@
 
   function updateThemeMeta() {
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', root.dataset.theme === 'dark' ? '#1c1230' : '#F7F2FF');
+    if (meta) meta.setAttribute('content', root.dataset.theme === 'dark' ? '#171719' : '#f4f2ef');
   }
 
   function renderThemeIcon() {
@@ -97,6 +97,26 @@
     }
   };
 
+  const previewImage = document.getElementById('previewImage');
+  const previewTitle = document.getElementById('previewTitle');
+  const previewDescription = document.getElementById('previewDescription');
+  const previewTabs = [...document.querySelectorAll('[data-preview]')];
+  const previews = {
+    home: ['Discover music', 'Quick Picks, new releases and recommendations based on your listening.', 'VYBE home screen'],
+    search: ['Find your next favorite', 'Search the YouTube Music catalog for songs, albums and artists.', 'VYBE search screen'],
+    player: ['Now playing', 'Artwork, synchronized lyrics and queue controls, all within reach.', 'VYBE full-screen music player']
+  };
+  previewTabs.forEach(tab => tab.addEventListener('click', () => {
+    const key = tab.dataset.preview;
+    if (!previews[key] || !previewImage) return;
+    const [title, description, alt] = previews[key];
+    previewImage.src = 'https://raw.githubusercontent.com/anshdeepofficial1/VYBE/main/docs/screenshots/vybe-' + key + '.png';
+    previewImage.alt = alt;
+    previewTitle.textContent = title;
+    previewDescription.textContent = description;
+    previewTabs.forEach(item => item.setAttribute('aria-pressed', String(item === tab)));
+  }));
+
   const heroStage = document.querySelector('.hero-stage');
   const phoneButtons = Array.from(document.querySelectorAll('.phone-button'));
   const screenEyebrow = document.getElementById('screenEyebrow');
@@ -145,7 +165,7 @@
   });
 
   function humanSize(bytes) {
-    if (!Number.isFinite(bytes)) return 'ARM64 APK';
+    if (!Number.isFinite(bytes)) return 'Android APK';
     const mib = bytes / 1024 / 1024;
     return `${mib.toFixed(1)} MB`;
   }
@@ -175,7 +195,7 @@
       list = [];
     };
     for (const rawLine of lines) {
-      const line = rawLine.trim();
+      const line = rawLine.trim().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       if (!line) {
         flushList();
         continue;
@@ -213,7 +233,7 @@
 
       const version = release.tag_name || defaultVersion;
       const assets = Array.isArray(release.assets) ? release.assets : [];
-      const apkAsset = assets.find((asset) => /arm64|arm64-v8a/i.test(asset.name) && /\.apk$/i.test(asset.name)) || assets.find((asset) => /\.apk$/i.test(asset.name));
+      const apkAsset = assets.find((asset) => /universal/i.test(asset.name) && /\.apk$/i.test(asset.name)) || assets.find((asset) => /\.apk$/i.test(asset.name) && !/arm64|armv7|armeabi|x86/i.test(asset.name)) || assets.find((asset) => /arm64/i.test(asset.name) && /\.apk$/i.test(asset.name)) || assets.find((asset) => /\.apk$/i.test(asset.name));
       const downloadUrl = apkAsset?.browser_download_url || release.html_url || releaseFallback;
 
       document.querySelectorAll('[data-download]').forEach((link) => {
@@ -223,7 +243,7 @@
         el.textContent = version;
       });
       const assetName = document.getElementById('assetName');
-      if (assetName) assetName.textContent = apkAsset?.name || 'ARM64 APK';
+      if (assetName) assetName.textContent = apkAsset?.name || 'Android APK';
       const apkSize = document.getElementById('apkSize');
       if (apkSize) apkSize.textContent = humanSize(apkAsset?.size);
       const releaseDate = document.getElementById('releaseDate');
@@ -236,7 +256,7 @@
       });
       document.querySelectorAll('[data-download]').forEach((link) => { link.href = releaseFallback; });
       const assetName = document.getElementById('assetName');
-      if (assetName && /checking/i.test(assetName.textContent)) assetName.textContent = 'ARM64 APK';
+      if (assetName && /checking/i.test(assetName.textContent)) assetName.textContent = 'Android APK';
       const apkSize = document.getElementById('apkSize');
       if (apkSize && /checking/i.test(apkSize.textContent)) apkSize.textContent = 'GitHub release';
       const releaseDate = document.getElementById('releaseDate');
